@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 05 · Mongo schema + index</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 1 · Bài 05</span>
+  <h1>Mongo schema + index (Catalog)</h1>
+  <p class="subtitle">Win: Product lưu Mongo (không còn Map RAM); restart app vẫn còn data; collection có index <code>name_1</code> và <code>stock_1_price_1</code>.</p>
+  <p class="meta-line">⏱ ~50–70 phút · 🎯 Bạn tự code — đã verify sandbox với Nest 11 + mongoose trên lockfile của bạn.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không có sẵn file schema trong repo. Làm theo bước dưới → nộp curl + <code>getIndexes()</code> + <code>npm test</code>.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Bài 03–04: DI + validate HTTP, data trong RAM. Product company cần persistence. Nest + Mongoose: class schema + <code>MongooseModule.forFeature</code> — xem <a href="https://docs.nestjs.com/techniques/mongodb" target="_blank">Nest MongoDB</a>. Index theo <a href="https://www.mongodb.com/docs/manual/indexes/" target="_blank">MongoDB Indexes</a>.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao index ngay, không “để sau”?</div>
+    <p>Catalog sẽ list/filter theo tên và còn hàng+giá. Không index → COLLSCAN khi data lớn. Index sai/thừa cũng hại write — chỉ tạo index khớp query thật sự sẽ dùng.</p>
+  </div>
+
+  <h2>0. Tiền đề</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>cd shopstream && docker compose up -d
+<span class="cmt"># Mongo phải healthy trước khi start Nest</span></code></pre>
+  </div>
+
+  <h2>1. Schema + index</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/catalog/schemas</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">src/catalog/schemas/product.schema.ts (tự tạo)</span>
+<pre><code><span class="kw">import</span> { Prop, Schema, SchemaFactory } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { HydratedDocument } <span class="kw">from</span> <span class="str">'mongoose'</span>;
+
+<span class="kw">export type</span> ProductDocument = HydratedDocument&lt;Product&gt;;
+
+<span class="kw">@Schema</span>({ timestamps: <span class="kw">true</span>, collection: <span class="str">'products'</span> })
+<span class="kw">export class</span> <span class="fn">Product</span> {
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, trim: <span class="kw">true</span> })
+  name!: string;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, min: <span class="num">0</span> })
+  price!: number;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, min: <span class="num">0</span> })
+  stock!: number;
+}
+
+<span class="kw">export const</span> ProductSchema = SchemaFactory.createForClass(Product);
+
+<span class="cmt">// Sau createForClass — compound/index phụ (docs Nest/Mongoose)</span>
+ProductSchema.index({ name: <span class="num">1</span> });
+ProductSchema.index({ stock: <span class="num">1</span>, price: <span class="num">1</span> });</code></pre>
+  </div>
+
+  <h2>2. Đăng ký model trong CatalogModule</h2>
+  <div class="code-block">
+    <span class="code-label">src/catalog/catalog.module.ts</span>
+<pre><code><span class="kw">import</span> { MongooseModule } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { Product, ProductSchema } <span class="kw">from</span> <span class="str">'./schemas/product.schema'</span>;
+
+<span class="kw">@Module</span>({
+  imports: [
+    MongooseModule.forFeature([
+      { name: Product.name, schema: ProductSchema },
+    ]),
+  ],
+  controllers: [ProductsController],
+  providers: [ProductsService],
+  exports: [ProductsService], <span class="cmt">// đủ cho Cart; đừng export thừa nếu chưa cần</span>
+})
+<span class="kw">export class</span> <span class="fn">CatalogModule</span> {}</code></pre>
+  </div>
+
+  <h2>3. Service: bỏ Map, inject Model</h2>
+  <div class="code-block">
+    <span class="code-label">ý chính — ProductsService</span>
+<pre><code><span class="kw">constructor</span>(
+  @<span class="fn">InjectModel</span>(Product.name)
+  <span class="kw">private readonly</span> productModel: Model&lt;ProductDocument&gt;,
+) {}
+
+<span class="cmt">// Map _id → id cho API ổn định</span>
+<span class="kw">private</span> <span class="fn">toResponse</span>(doc: ProductDocument) {
+  <span class="kw">return</span> {
+    id: String(doc._id),
+    name: doc.name,
+    price: doc.price,
+    stock: doc.stock,
+  };
+}
+
+<span class="kw">async</span> <span class="fn">findAll</span>() {
+  <span class="kw">const</span> docs = <span class="kw">await</span> <span class="kw">this</span>.productModel.find().sort({ createdAt: -<span class="num">1</span> }).exec();
+  <span class="kw">return</span> docs.map((d) => <span class="kw">this</span>.toResponse(d));
+}
+
+<span class="kw">async</span> <span class="fn">create</span>(input: CreateProductDto) {
+  <span class="kw">const</span> doc = <span class="kw">await</span> <span class="kw">this</span>.productModel.create({ ...input });
+  <span class="kw">return</span> <span class="kw">this</span>.toResponse(doc);
+}</code></pre>
+  </div>
+  <p>Controller gọi service async như cũ (<code>return this.productsService.create(body)</code> — Nest await Promise).</p>
+  <p>Gợi ý dọn: đổi <code>product.types.ts</code> thành <code>ProductResponse</code>; xoá <code>CreateProductInput</code> / Map nếu còn sót từ Bài 03.</p>
+
+  <h2>4. Đổi unit test — mock <code>getModelToken</code></h2>
+  <p>Không nối Mongo trong unit test. Pattern giống Health mock connection:</p>
+  <div class="code-block">
+    <span class="code-label">products.service.spec.ts — ý chính</span>
+<pre><code>{ provide: getModelToken(Product.name), useValue: mockModel }
+
+<span class="cmt">// mockModel.find().sort().exec() → []</span>
+<span class="cmt">// mockModel.create → document có _id</span></code></pre>
+  </div>
+  <p>Sandbox verify: <strong>7 tests passed</strong> với mock kiểu này.</p>
+
+  <h2>5. Sanity check (nộp)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>npm test && npm run build
+npm run start:dev
+
+curl -s -X POST http://localhost:3000/catalog/products \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"name":"Mongo Ao","price":200,"stock":5}'</span>
+
+<span class="cmt"># Restart Nest rồi GET lại — phải vẫn thấy product</span>
+curl -s http://localhost:3000/catalog/products
+
+docker compose exec mongo mongosh shopstream --quiet --eval <span class="str">'db.products.getIndexes()'</span>
+<span class="cmt"># Kỳ vọng có name_1 và stock_1_price_1 (ngoài _id_)</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Index nào cho “list sản phẩm còn hàng, sort giá tăng”?<br>
+    <strong>A gọn:</strong> Compound <code>{ stock: 1, price: 1 }</code> (hoặc partial index stock&gt;0). Equality/range trái → sort phải theo thứ tự prefix của compound index. Đừng index mọi field “cho chắc”.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Vì sao map <code>_id</code> → <code>id</code> ở service thay vì trả raw document?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — API ổn định, không lộ nội bộ Mongo, client không phụ thuộc ObjectId shape.">A. Giữ contract API ổn định, tách persistence khỏi response</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Mongo bắt buộc _id; chỉ là ta không expose nguyên si.">B. Vì Mongo không có _id</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Vì ValidationPipe yêu cầu</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Unit test ProductsService sau Bài 05 nên?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — mock Model, không cần Docker cho unit.">A. Mock getModelToken / Model</button>
+    <button class="opt" data-correct="false" data-explain="Chậm, flaky — để e2e.">B. Luôn nối Mongo thật trong mọi unit test</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Xoá hết test service</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>Không còn <code>Map</code> trong ProductsService</li>
+      <li>POST → GET sau <strong>restart</strong> Nest vẫn còn data</li>
+      <li><code>getIndexes()</code> có <code>name_1</code> và <code>stock_1_price_1</code></li>
+      <li><code>npm test</code> xanh (mock model)</li>
+    </ul>
+  </div>
+
+  <h2>6. Câu hỏi tư duy</h2>
+  <p>Soft-delete product (Bài 06): thêm <code>deletedAt</code> — index list “còn bán” nên thế nào để query không quét bản ghi đã xoá?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 06 · Soft delete / pagination</div>
+    <p class="nd">List catalog có phân trang + ẩn sp đã xoá mềm.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0004-dto-validation-pipe.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Tự code xong → paste POST/GET (sau restart) + output <code>getIndexes()</code> + <code>npm test</code>. Mình đọc file trong repo rồi chấm.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
