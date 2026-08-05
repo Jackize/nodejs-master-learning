@@ -10,3 +10,6 @@
 | **Fail fast** | Phát hiện config/invariant sai ngay lúc start, không đợi request đầu tiên mới 500. |
 | **Feature module** | Module Nest theo domain (Health, Catalog…) — AppModule chỉ compose. |
 | **validationSchema (Joi)** | Schema Joi truyền vào ConfigModule để validate env khi bootstrap. |
+| **Unit test** | Test một đơn vị + mock dependency; nhanh, không cần Docker. |
+| **getConnectionToken()** | Token DI của connection Mongoose mặc định — dùng để mock trong test Health. |
+| **TestingModule** | Module Nest dựng bởi `Test.createTestingModule` cho unit/integration test. |

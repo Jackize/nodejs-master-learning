@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 02 · Testing baseline Nest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 0 · Bài 02</span>
+  <h1>Testing baseline Nest</h1>
+  <p class="subtitle">Win: <code>npm test</code> có ≥5 test — Health mock connection + Joi schema — xanh không cần Mongo thật.</p>
+  <p class="meta-line">⏱ ~35–45 phút · 🎯 Mục tiêu: thói quen test trước khi viết Catalog (chống regression im lặng).</p>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu từ Bài 01</div>
+    <p>Bạn đã có fail-fast config và <code>HealthController</code>. Hiện Jest gần như chỉ test “Hello World”. Product company / phỏng vấn hỏi: “làm sao biết refactor không phá health/config?” — câu trả lời là <strong>unit test có mock dependency</strong>, không phải “chạy tay curl”.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao unit, chưa e2e đầy đủ?</div>
+    <p>Unit test Health + schema chạy &lt;1s, không cần Docker — CI/local tight feedback. E2e với Mongo thật để dành khi có Catalog API. Theo <a href="https://docs.nestjs.com/fundamentals/testing" target="_blank">Nest Testing</a>: dùng <code>Test.createTestingModule</code> + mock provider (token connection qua <code>getConnectionToken()</code>).</p>
+  </div>
+
+  <h2>1. Test Health — mock <code>readyState</code></h2>
+  <p><code>@InjectConnection()</code> lấy token mặc định của Mongoose. Trong test, cung cấp object giả <code>{ readyState }</code> thay vì Mongo thật.</p>
+
+  <div class="code-block">
+    <span class="code-label">src/health/health.controller.spec.ts (file mới)</span>
+<pre><code><span class="kw">import</span> { Test, TestingModule } <span class="kw">from</span> <span class="str">'@nestjs/testing'</span>;
+<span class="kw">import</span> { getConnectionToken } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { HealthController } <span class="kw">from</span> <span class="str">'./health.controller'</span>;
+
+describe(<span class="str">'HealthController'</span>, () => {
+  <span class="kw">async function</span> <span class="fn">createController</span>(readyState: number) {
+    <span class="kw">const</span> module: TestingModule = <span class="kw">await</span> Test.createTestingModule({
+      controllers: [HealthController],
+      providers: [
+        {
+          provide: getConnectionToken(), <span class="cmt">// token connection mặc định</span>
+          useValue: { readyState },
+        },
+      ],
+    }).compile();
+    <span class="kw">return</span> module.get(HealthController);
+  }
+
+  it(<span class="str">'trả ok=true khi mongo connected (readyState=1)'</span>, <span class="kw">async</span> () => {
+    <span class="kw">const</span> controller = <span class="kw">await</span> createController(<span class="num">1</span>);
+    <span class="kw">await</span> expect(controller.check()).resolves.toEqual({
+      ok: <span class="kw">true</span>,
+      mongo: <span class="str">'up'</span>,
+      service: <span class="str">'shopstream-api'</span>,
+    });
+  });
+
+  it(<span class="str">'trả ok=false khi mongo chưa connected'</span>, <span class="kw">async</span> () => {
+    <span class="kw">const</span> controller = <span class="kw">await</span> createController(<span class="num">0</span>);
+    <span class="kw">await</span> expect(controller.check()).resolves.toEqual({
+      ok: <span class="kw">false</span>,
+      mongo: <span class="str">'down'</span>,
+      service: <span class="str">'shopstream-api'</span>,
+    });
+  });
+});</code></pre>
+  </div>
+
+  <h2>2. Test schema Joi — không cần Nest bootstrap</h2>
+  <p>Validate schema thuần: nhanh, rõ contract env. Đây là “bảo hiểm” cho Bài 01.</p>
+
+  <div class="code-block">
+    <span class="code-label">src/config/env.validation.spec.ts (file mới)</span>
+<pre><code><span class="kw">import</span> { envValidationSchema } <span class="kw">from</span> <span class="str">'./env.validation'</span>;
+
+describe(<span class="str">'envValidationSchema'</span>, () => {
+  it(<span class="str">'pass khi có MONGODB_URI'</span>, () => {
+    <span class="kw">const</span> { error, value } = envValidationSchema.validate({
+      MONGODB_URI: <span class="str">'mongodb://127.0.0.1:27017/shopstream'</span>,
+    });
+    expect(error).toBeUndefined();
+    expect(value.PORT).toBe(<span class="num">3000</span>); <span class="cmt">// default từ schema</span>
+  });
+
+  it(<span class="str">'fail khi thiếu MONGODB_URI'</span>, () => {
+    <span class="kw">const</span> { error } = envValidationSchema.validate({ NODE_ENV: <span class="str">'development'</span> });
+    expect(error).toBeDefined();
+    expect(error?.message).toMatch(<span class="str">/MONGODB_URI/</span>);
+  });
+});</code></pre>
+  </div>
+
+  <h2>3. Chạy và đọc output</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code><span class="kw">cd</span> shopstream/api
+npm test
+<span class="cmt"># Kỳ vọng: Test Suites: 3 passed · Tests: 5 passed</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> “Unit vs integration vs e2e?”<br>
+    <strong>A gọn:</strong> Unit = 1 đơn vị + mock (nhanh, ổn định). Integration = vài lớp thật (vd Nest + Mongo testcontainer). E2E = HTTP full path. Kim tự tháp: nhiều unit, ít e2e đắt đỏ. Health unit mock <code>readyState</code> thuộc tầng unit.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Vì sao mock <code>getConnectionToken()</code> thay vì luôn test Health với Mongo Docker?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — feedback nhanh, ổn định CI, đủ để khóa logic readyState → payload.">A. Unit test cần nhanh/ổn định; logic health chỉ phụ thuộc readyState</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Docker Mongo vẫn hữu ích cho e2e sau này.">B. Vì Docker Mongo không bao giờ dùng trong Nest</button>
+    <button class="opt" data-correct="false" data-explain="Sai — mock không chứng minh network; đó là việc của e2e.">C. Mock chứng minh được network tới Mongo Atlas</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Test Joi schema riêng (không createTestingModule) vẫn có giá trị vì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — contract env nằm ở schema; test trực tiếp rẻ và rõ.">A. Nó khóa contract env độc lập với Nest DI</button>
+    <button class="opt" data-correct="false" data-explain="Sai — không thay thế được test HTTP.">B. Nó thay thế hoàn toàn e2e</button>
+    <button class="opt" data-correct="false" data-explain="Sai — schema vẫn cần khi có Nest.">C. Vì Nest không đọc Joi nữa</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist nộp bài</div>
+    <ul class="checklist">
+      <li>Có <code>health.controller.spec.ts</code> + <code>env.validation.spec.ts</code></li>
+      <li><code>npm test</code> → <strong>5 passed</strong> (hoặc ≥5 nếu bạn thêm)</li>
+      <li>Không cần Docker để suite này xanh</li>
+    </ul>
+  </div>
+
+  <h2>4. Câu hỏi tư duy</h2>
+  <p>Khi Catalog có <code>createProduct</code>, bạn unit-test Service (mock Model) trước hay viết e2e HTTP+Mongo trước? Trade-off tốc độ vs độ tin cậy trước deadline phỏng vấn?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 03 · Module/DI sâu hơn CRUD — Catalog skeleton</div>
+    <p class="nd">Bắt đầu domain: CatalogModule + product stub, DI đúng cách Nest.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0001-cau-truc-nest-config-12-factor.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Chạy <code>npm test</code> và paste nguyên khối summary (<code>Test Suites</code> / <code>Tests</code>). Muốn hiểu mock token — hỏi trước khi đụng Catalog.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
