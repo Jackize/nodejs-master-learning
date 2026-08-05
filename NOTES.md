@@ -26,3 +26,6 @@
 - Mongo giữ (cty target dùng Mongo)
 - Tên dự án: ShopStream
 - Git: đã init; commit theo bài khi học viên xác nhận hoàn thành; push khi có remote
+
+## Teaching prefs (bổ sung)
+- **Từ Bài 04:** không code dùm vào `shopstream/` — chỉ soạn bài + verify sandbox; học viên tự viết/apply.

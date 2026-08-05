@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 04 · DTO + ValidationPipe + error shape</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 1 · Bài 04</span>
+  <h1>DTO + ValidationPipe + error shape</h1>
+  <p class="subtitle">Win: POST body sai kiểu / thừa field → <strong>HTTP 400</strong> với JSON lỗi thống nhất; body đúng → tạo product như Bài 03.</p>
+  <p class="meta-line">⏱ ~45–60 phút · 🎯 Bạn tự code vào <code>shopstream/</code> — mình không commit code dùm.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Chế độ tự làm</div>
+    <p>Từ bài này: đọc hướng dẫn → <strong>tự viết</strong> vào project → gửi kết quả để chấm. Code mẫu dưới đây là tài liệu tham khảo (đã verify sandbox với <code>class-validator@0.15.1</code> / <code>class-transformer@0.5.1</code>), không phải file đã có sẵn trong repo.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu từ Bài 03</div>
+    <p>Catalog đang nhận mọi JSON (kể cả <code>name: 1</code>). Product API cần <em>hợp đồng input</em> rõ. Nest dùng DTO class + <code>ValidationPipe</code> — xem <a href="https://docs.nestjs.com/techniques/validation" target="_blank">Nest Validation</a>.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Pipe toàn cục vs validate trong service</div>
+    <p>Validate ở biên HTTP (pipe) → service nhận data đã sạch, ít if/throw lặp. <code>whitelist</code> + <code>forbidNonWhitelisted</code>: field lạ bị từ chối thay vì lặng lẽ ghi vào DB sau này (mass assignment).</p>
+  </div>
+
+  <h2>1. Cài package (làm TRƯỚC khi import)</h2>
+  <div class="code-block">
+    <span class="code-label">bash — trong shopstream/api</span>
+<pre><code><span class="kw">cd</span> shopstream/api
+npm install class-validator class-transformer
+<span class="cmt"># Đã verify: class-validator@0.15.1 · class-transformer@0.5.1 trên lockfile Nest 11 của bạn</span></code></pre>
+  </div>
+
+  <h2>2. Tạo DTO</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/catalog/dto</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">src/catalog/dto/create-product.dto.ts (tự tạo)</span>
+<pre><code><span class="kw">import</span> { IsInt, IsNumber, IsString, Min, MinLength } <span class="kw">from</span> <span class="str">'class-validator'</span>;
+
+<span class="kw">export class</span> <span class="fn">CreateProductDto</span> {
+  @<span class="fn">IsString</span>()
+  @<span class="fn">MinLength</span>(<span class="num">1</span>)
+  name!: string;
+
+  @<span class="fn">IsNumber</span>()
+  @<span class="fn">Min</span>(<span class="num">0</span>)
+  price!: number;
+
+  @<span class="fn">IsInt</span>()
+  @<span class="fn">Min</span>(<span class="num">0</span>)
+  stock!: number;
+}</code></pre>
+  </div>
+  <p>Đổi controller/service: dùng <code>CreateProductDto</code> thay <code>CreateProductInput</code>. Có thể xoá class cũ trong <code>product.types.ts</code>, giữ <code>type Product</code>.</p>
+
+  <h2>3. Bật ValidationPipe global trong main.ts</h2>
+  <div class="code-block">
+    <span class="code-label">src/main.ts — thêm useGlobalPipes</span>
+<pre><code><span class="kw">import</span> { ValidationPipe } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="cmt">// ...</span>
+<span class="kw">const</span> app = <span class="kw">await</span> NestFactory.create(AppModule);
+
+app.useGlobalPipes(
+  <span class="kw">new</span> <span class="fn">ValidationPipe</span>({
+    whitelist: <span class="kw">true</span>,              <span class="cmt">// bỏ field không có decorator</span>
+    forbidNonWhitelisted: <span class="kw">true</span>,  <span class="cmt">// field lạ → 400</span>
+    transform: <span class="kw">true</span>,               <span class="cmt">// plain object → instance DTO</span>
+    transformOptions: { enableImplicitConversion: <span class="kw">true</span> },
+  }),
+);</code></pre>
+  </div>
+
+  <h2>4. Error shape thống nhất (filter)</h2>
+  <p>Validation mặc định của Nest đã trả 400, nhưng shape hơi “thô”. Filter nhỏ giúp mọi <code>HttpException</code> cùng format — tiện frontend và phỏng vấn.</p>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/common/filters</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">src/common/filters/http-exception.filter.ts (tự tạo)</span>
+<pre><code><span class="kw">import</span> {
+  ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus,
+} <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { Response } <span class="kw">from</span> <span class="str">'express'</span>;
+
+<span class="kw">@Catch</span>(HttpException)
+<span class="kw">export class</span> <span class="fn">HttpExceptionFilter</span> <span class="kw">implements</span> ExceptionFilter {
+  <span class="fn">catch</span>(exception: HttpException, host: ArgumentsHost) {
+    <span class="kw">const</span> res = host.switchToHttp().getResponse&lt;Response&gt;();
+    <span class="kw">const</span> status = exception.getStatus();
+    <span class="kw">const</span> body = exception.getResponse();
+    <span class="kw">const</span> message =
+      <span class="kw">typeof</span> body === <span class="str">'string'</span>
+        ? body
+        : ((body <span class="kw">as</span> { message?: string | string[] }).message ?? exception.message);
+
+    res.status(status).json({
+      statusCode: status,
+      error: HttpStatus[status] ?? <span class="str">'Error'</span>,
+      message,
+      timestamp: <span class="kw">new</span> <span class="fn">Date</span>().toISOString(),
+    });
+  }
+}</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">src/main.ts — đăng ký filter</span>
+<pre><code><span class="kw">import</span> { HttpExceptionFilter } <span class="kw">from</span> <span class="str">'./common/filters/http-exception.filter'</span>;
+<span class="cmt">// sau useGlobalPipes:</span>
+app.useGlobalFilters(<span class="kw">new</span> <span class="fn">HttpExceptionFilter</span>());</code></pre>
+  </div>
+
+  <h2>5. Sanity check (bắt buộc nộp)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>npm test
+npm run start:dev
+
+<span class="cmt"># Phải 400 + có statusCode/message/timestamp</span>
+curl -s -X POST http://localhost:3000/catalog/products \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"name":1,"price":"x","stock":-1,"extra":true}'</span>
+
+<span class="cmt"># Phải 201 (hoặc 200) + product hợp lệ</span>
+curl -s -X POST http://localhost:3000/catalog/products \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"name":"Áo","price":100,"stock":2}'</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> whitelist vs forbidNonWhitelisted?<br>
+    <strong>A:</strong> whitelist = im lặng bỏ field thừa; forbid = 400 nếu có field thừa. API public thường forbid để client biết contract; nội bộ đôi khi chỉ whitelist.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Validation nên đặt chủ yếu ở đâu cho HTTP API Nest?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — biên HTTP (pipe) trước khi vào service.">A. ValidationPipe / DTO ở biên request</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Mongo schema là persistence, không thay validation API.">B. Chỉ dựa vào Mongo schema</button>
+    <button class="opt" data-correct="false" data-explain="Sai — frontend không đáng tin.">C. Chỉ tin validation phía React</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Client gửi thêm <code>role: "admin"</code> không có trong DTO, với forbidNonWhitelisted?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — 400, không tạo product.">A. HTTP 400</button>
+    <button class="opt" data-correct="false" data-explain="Sai — forbid không im lặng bỏ.">B. Vẫn 201, field bị bỏ im lặng</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. App crash 500</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist tự nộp</div>
+    <ul class="checklist">
+      <li><code>class-validator</code> + <code>class-transformer</code> trong <code>package.json</code></li>
+      <li>Có <code>CreateProductDto</code> + pipe global + filter</li>
+      <li>curl body xấu → 400, shape có <code>statusCode</code>, <code>message</code>, <code>timestamp</code></li>
+      <li>curl body đẹp → tạo được product</li>
+      <li><code>npm test</code> vẫn xanh (cập nhật spec nếu đổi tên type)</li>
+    </ul>
+  </div>
+
+  <h2>6. Câu hỏi tư duy</h2>
+  <p>Khi chuyển store sang Mongo (Bài 05), validation DTO còn cần không nếu Mongoose cũng có required/min? Hai lớp khác nhau chỗ nào?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 05 · Mongo schema + index</div>
+    <p class="nd">Thay Map RAM bằng collection Product + index query catalog.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0003-catalog-module-di.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Tự code xong → paste (1) curl 400 (2) curl thành công (3) <code>npm test</code>. Mình đọc file thật trong repo rồi chấm — không gửi “em làm xong” suông.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
