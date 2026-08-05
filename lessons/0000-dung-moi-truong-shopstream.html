@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 00 · Dựng môi trường ShopStream</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 0 · Bài 00</span>
+  <h1>Dựng môi trường ShopStream</h1>
+  <p class="subtitle">Win: Mongo + Kafka + Nest API chạy local, <code>/health</code> báo mongo up.</p>
+  <p class="meta-line">⏱ ~45–60 phút · 🎯 Mục tiêu: stack học chạy được trên máy bạn trước khi viết business logic.</p>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu từ cái bạn đã biết</div>
+    <p>Bạn đã làm Nest/Express CRUD và Docker ở mức trung bình. Bài này không dạy Nest sâu — chỉ <strong>ghép</strong> Nest + Mongo + Kafka thành một “nhà máy” local. Kafka chưa nối vào Nest (Module 3); hôm nay chỉ cần broker sống để các bài sau không phải cài lại.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao Bài 00 trước mọi kiến thức?</div>
+    <p>Học Kafka “chay” (không broker) hoặc Nest không Mongo sẽ tạo ảo giác hiểu. Product company kỳ vọng bạn <em>chạy được</em> stack. Deadline phỏng vấn cuối tháng 8 → càng không được mất thời gian cài đặt giữa chừng.</p>
+  </div>
+
+  <h2>1. Dò máy thật (đã chạy trên máy bạn)</h2>
+  <p>Trước khi giao bài, mình đã kiểm trên máy này:</p>
+  <table class="data">
+    <thead><tr><th>Công cụ</th><th>Kết quả</th><th>Hành động</th></tr></thead>
+    <tbody>
+      <tr><td>Node</td><td>v22.21.0 (nvm)</td><td>Đủ — Nest 11 hỗ trợ</td></tr>
+      <tr><td>npm</td><td>10.9.4</td><td>Đủ</td></tr>
+      <tr><td>Nest CLI</td><td>11.0.24 (qua npx)</td><td>Đủ</td></tr>
+      <tr><td>Docker / Compose</td><td>29.4.0 / v5.1.2</td><td>Đủ — dùng cho Mongo + Kafka</td></tr>
+      <tr><td>Java</td><td class="nullcell">không có</td><td>OK — Kafka qua Docker, không cần cài JDK</td></tr>
+      <tr><td>mongosh (host)</td><td class="nullcell">không có</td><td>OK — dùng <code>docker exec … mongosh</code></td></tr>
+    </tbody>
+  </table>
+  <p>Đã verify trong sandbox sạch với: <strong>Nest 11</strong>, <strong>mongo:7.0</strong>, <strong>apache/kafka:4.3.1</strong>, <code>@nestjs/mongoose@11</code> + <code>mongoose@9</code>, <code>@nestjs/config@4</code>. Nguồn Kafka Docker: <a href="https://kafka.apache.org/quickstart/" target="_blank">Apache Kafka Quickstart</a> (<code>docker run -p 9092:9092 apache/kafka:4.3.1</code>).</p>
+
+  <h2>2. Cấu trúc dự án đích</h2>
+  <p>Chế độ dự án song song: <strong>ShopStream thay sân tập trống</strong>. Thư mục đã được scaffold sẵn trong workspace (bạn vẫn phải tự chạy sanity check bên dưới):</p>
+  <div class="code-block">
+    <span class="code-label">cây thư mục</span>
+<pre><code>shopstream/
+├── docker-compose.yml   <span class="cmt"># Mongo + Kafka</span>
+├── README.md
+└── api/                 <span class="cmt"># NestJS TypeScript</span>
+    ├── .env.example
+    ├── package.json
+    └── src/
+        ├── main.ts
+        ├── app.module.ts
+        └── health/health.controller.ts</code></pre>
+  </div>
+
+  <h2>3. Bước 1 — Bật Mongo + Kafka</h2>
+  <p>Vì sao Compose? Một lệnh nâng cả hai dependency; cùng network Docker; tái lập được trên máy khác (portfolio / laptop phỏng vấn).</p>
+  <div class="code-block">
+    <span class="code-label">bash — từ root workspace</span>
+<pre><code><span class="cmt"># Vào thư mục dự án</span>
+<span class="kw">cd</span> shopstream
+
+<span class="cmt"># Kéo image (lần đầu có thể vài phút) và chạy nền</span>
+docker compose up -d
+
+<span class="cmt"># Xem trạng thái — mongo + kafka phải Up</span>
+docker compose ps</code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Kafka KRaft, không ZooKeeper</div>
+    <p>Kafka hiện đại chạy KRaft (broker + controller trong một process). Image <code>apache/kafka:4.3.1</code> mặc định phù hợp local. Đừng copy compose cũ còn ZooKeeper từ blog 2020 — dễ lệch với docs hiện tại.</p>
+  </div>
+
+  <h2>4. Bước 2 — Sanity Mongo &amp; Kafka (không qua Nest)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code><span class="cmt"># Ping Mongo trong container (ok: 1)</span>
+docker compose exec mongo mongosh --quiet --eval <span class="str">"db.adminCommand('ping')"</span>
+
+<span class="cmt"># Tạo topic smoke-test (chứng minh broker nhận lệnh)</span>
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --create --topic shopstream.health --if-not-exists
+
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --list</code></pre>
+  </div>
+  <p>Bạn phải thấy topic <code>shopstream.health</code>. Đây là bằng chứng Kafka sống — Nest chưa consume gì cả (cố ý).</p>
+
+  <h2>5. Bước 3 — Chạy Nest API + /health</h2>
+  <p>Nest nối Mongo qua <code>MongooseModule</code> + URI trong <code>.env</code> (pattern 12-factor: config ngoài code). Theo <a href="https://docs.nestjs.com/techniques/mongodb" target="_blank">NestJS MongoDB docs</a>.</p>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code><span class="kw">cd</span> api
+<span class="cmt"># Copy env mẫu nếu chưa có .env</span>
+cp -n .env.example .env
+npm install
+npm run start:dev</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/health/health.controller.ts (đã có sẵn)</span>
+<pre><code><span class="kw">@Controller</span>(<span class="str">'health'</span>)
+<span class="kw">export class</span> <span class="fn">HealthController</span> {
+  <span class="kw">constructor</span>(@<span class="fn">InjectConnection</span>() <span class="kw">private readonly</span> connection: Connection) {}
+
+  @<span class="fn">Get</span>()
+  <span class="kw">async</span> <span class="fn">check</span>() {
+    <span class="cmt">// readyState === 1 → đã connected</span>
+    <span class="kw">const</span> mongoOk = <span class="kw">this</span>.connection.readyState === <span class="num">1</span>;
+    <span class="kw">return</span> { ok: mongoOk, mongo: mongoOk ? <span class="str">'up'</span> : <span class="str">'down'</span>, service: <span class="str">'shopstream-api'</span> };
+  }
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">bash — terminal khác</span>
+<pre><code>curl -s http://localhost:3000/health
+<span class="cmt"># Kỳ vọng: {"ok":true,"mongo":"up","service":"shopstream-api"}</span>
+
+<span class="cmt"># Unit test mặc định Nest vẫn xanh</span>
+<span class="kw">cd</span> shopstream/api && npm test</code></pre>
+  </div>
+
+  <div class="callout warn">
+    <div class="ct">Port đã bị chiếm?</div>
+    <p>Nếu <code>27017</code>/<code>9092</code>/<code>3000</code> conflict: <code>docker compose ps</code> + <code>lsof -i :3000</code>. Có thể đang còn container từ lần verify trước — <code>docker compose -f shopstream/docker-compose.yml down</code> rồi <code>up -d</code> lại trong <code>shopstream/</code>.</p>
+  </div>
+
+  <h2>6. Đánh đổi đã chọn (nói được khi phỏng vấn)</h2>
+  <table class="data">
+    <thead><tr><th>Chọn</th><th>Vì sao</th><th>Đánh đổi</th></tr></thead>
+    <tbody>
+      <tr><td>Mongo (không Postgres)</td><td>Cty target dùng Mongo; bạn đã có nền</td><td>Ít luyện SQL transaction — bù bằng session Mongo ở Module 2</td></tr>
+      <tr><td>Kafka Docker, chưa Nest Kafka</td><td>Tách “broker sống” khỏi “integrate Nest”</td><td>Bài này chưa emit event — Module 3 mới làm</td></tr>
+      <tr><td>Một Nest app (chưa split microservice)</td><td>MVP order flow trước deadline</td><td>Sau này có thể tách notification service</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> “Vì sao health check phải ping dependency, không chỉ trả 200?”<br>
+    <strong>A gọn:</strong> Load balancer/k8s cần biết app <em>sẵn sàng phục vụ</em>. Process Nest sống mà Mongo down → request sẽ 500; health phải phản ánh dependency tới hạn (liveness vs readiness — sẽ sâu hơn Sprint B).</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Máy bạn không có Java. Kafka local vẫn chạy được nhờ đâu?</div>
+    <button class="opt" data-correct="false" data-explain="Sai — bài này cố ý không bắt cài JDK.">A. Bắt buộc cài JDK 17 rồi chạy kafka-server-start.sh</button>
+    <button class="opt" data-correct="true" data-explain="Đúng — image apache/kafka chứa runtime; host chỉ cần Docker.">B. Chạy broker trong Docker (apache/kafka), host không cần Java</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Nest chưa wire Kafka ở Bài 00.">C. NestJS tự nhúng Kafka broker khi npm start</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. <code>GET /health</code> trả <code>mongo: "down"</code> trong khi Nest vẫn start được. Ý nghĩa?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — process sống ≠ dependency sẵn sàng; đây là tín hiệu ops quan trọng.">A. App process sống nhưng chưa (hoặc mất) kết nối Mongo</button>
+    <button class="opt" data-correct="false" data-explain="Sai — readyState không liên quan Kafka ở bài này.">B. Kafka topic chưa được tạo</button>
+    <button class="opt" data-correct="false" data-explain="Sai — down nghĩa là chưa connected.">C. Mọi thứ ổn, "down" chỉ là tên field</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist tự kiểm (gửi kết quả cho mình)</div>
+    <ul class="checklist">
+      <li><code>docker compose ps</code> — mongo + kafka Up</li>
+      <li>mongosh ping → <code>{ ok: 1 }</code></li>
+      <li><code>kafka-topics --list</code> có <code>shopstream.health</code></li>
+      <li><code>curl /health</code> → <code>ok: true</code>, <code>mongo: up</code></li>
+      <li><code>npm test</code> trong <code>api/</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>7. Câu hỏi tư duy (bắc cầu sang bài sau)</h2>
+  <p>Khi ShopStream lớn (catalog, cart, order, notification), bạn muốn <strong>một</strong> repo Nest hay tách nhiều app? Trade-off gì với deadline cuối tháng 8? (Bài 01 sẽ chốt cấu trúc module/config “production-minded” trong một API trước.)</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 01 · Cấu trúc Nest + config 12-factor</div>
+    <p class="nd">Chia module rõ ràng, env validation — nền để gắn Catalog mà không thành “god module”.</p>
+  </div>
+
+  <div class="navbar">
+    <a class="disabled">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Chạy checklist rồi paste output <code>curl /health</code> + <code>docker compose ps</code> vào chat. Kẹt port/Docker — hỏi ngay, đừng tự đấu vật quá 15 phút.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lộ trình Senior Backend Node.js + Kafka</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+<style>
+  .hero { text-align: center; margin-bottom: 14px; }
+  .hero h1 { font-size: 2.4rem; }
+  .progress-wrap { margin: 26px 0 40px; }
+  .progress-bar { height: 10px; background: var(--bg-card); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+  .progress-label { text-align: center; color: var(--text-dim); font-size: 14px; margin-top: 8px; }
+  .module { margin: 30px 0; }
+  .module-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  .module-num { font-family: var(--mono); color: var(--accent); font-weight: 600; font-size: 14px; }
+  .module-head h2 { border: none; margin: 14px 0 2px; padding: 0; font-size: 1.35rem; }
+  .module-why { color: var(--text-dim); font-size: 14px; margin: 0 0 12px; }
+  .lessons-list { list-style: none; padding: 0; margin: 0; }
+  .lessons-list li { margin: 6px 0; }
+  .lessons-list a, .lessons-list span.soon {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg-soft); font-size: 15px;
+  }
+  .lessons-list a { color: var(--text); }
+  .lessons-list a:hover { border-color: var(--accent); background: var(--bg-card); }
+  .lessons-list span.soon { color: var(--text-dim); border-style: dashed; }
+  .badge { font-family: var(--mono); font-size: 12px; padding: 2px 8px; border-radius: 6px; flex-shrink: 0; }
+  .badge.done { background: rgba(74,222,128,.15); color: var(--green); }
+  .badge.now  { background: rgba(56,189,248,.15); color: var(--accent); }
+  .badge.soon { background: #232838; color: var(--text-dim); }
+  .lcount { margin-left: auto; font-size: 12px; color: var(--text-dim); font-family: var(--mono); }
+  .intro-card { background: var(--bg-card); border: 1px solid var(--border); border-left: 4px solid var(--accent-2); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <span class="lesson-tag">🟢 Node.js · NestJS · Kafka · ShopStream</span>
+    <h1>Senior Backend Path</h1>
+    <p class="subtitle">Xin việc product company — ship order flow có Kafka trên NestJS + Mongo.</p>
+  </div>
+
+  <div class="intro-card">
+    <strong>Cách học:</strong> Mỗi bài dạy một thứ, đóng góp mẩu chạy được vào <strong>ShopStream</strong> (catalog → cart → order → payment webhook → Kafka notify).
+    Sprint A (đến phỏng vấn cuối tháng 8) ưu tiên interview + order flow MVP; Sprint B đào sâu senior sau đó.
+    Mở bài: <code>open lessons/index.html</code> hoặc click bên dưới.
+  </div>
+
+  <div class="progress-wrap">
+    <div class="progress-bar"><div class="progress-fill" style="width: 2%"></div></div>
+    <div class="progress-label">1 / ~55 bài soạn · đang ở Bài 00</div>
+  </div>
+
+  <div class="module">
+    <div class="module-head"><span class="module-num">Module 0</span></div>
+    <h2>Khung ShopStream</h2>
+    <p class="module-why">Dựng nhà máy local — không học chay.</p>
+    <ul class="lessons-list">
+      <li><a href="0000-dung-moi-truong-shopstream.html"><span class="badge now">Bài 00</span> Dựng môi trường ShopStream <span class="lcount">sẵn sàng</span></a></li>
+      <li><span class="soon"><span class="badge soon">Bài 01</span> Cấu trúc Nest + config 12-factor <span class="lcount">sắp tới</span></span></li>
+      <li><span class="soon"><span class="badge soon">Bài 02</span> Testing baseline Nest <span class="lcount">sắp tới</span></span></li>
+    </ul>
+  </div>
+
+  <div class="module">
+    <div class="module-head"><span class="module-num">Module 1</span></div>
+    <h2>Nest production CRUD</h2>
+    <p class="module-why">Nâng CRUD freelance → API catalog chuẩn product.</p>
+    <ul class="lessons-list">
+      <li><span class="soon"><span class="badge soon">Bài 03</span> Module/DI sâu hơn CRUD <span class="lcount">sắp tới</span></span></li>
+      <li><span class="soon"><span class="badge soon">Bài 04</span> DTO + ValidationPipe + error shape <span class="lcount">sắp tới</span></span></li>
+      <li><span class="soon"><span class="badge soon">Bài 05</span> Mongo schema + index <span class="lcount">sắp tới</span></span></li>
+      <li><span class="soon"><span class="badge soon">Bài 06</span> Soft delete / pagination <span class="lcount">sắp tới</span></span></li>
+      <li><span class="soon"><span class="badge soon">Bài 07</span> Auth JWT tối thiểu <span class="lcount">sắp tới</span></span></li>
+      <li><span class="soon"><span class="badge soon">Bài 08</span> Mini-recall module 1 <span class="lcount">sắp tới</span></span></li>
+    </ul>
+  </div>
+
+  <div class="module">
+    <div class="module-head"><span class="module-num">Module 2</span></div>
+    <h2>Cart &amp; Order domain</h2>
+    <p class="module-why">Domain trước Kafka — state machine, idempotency HTTP, webhook stub.</p>
+    <ul class="lessons-list">
+      <li><span class="soon"><span class="badge soon">Bài 09–15</span> Cart → checkout → order → payment webhook <span class="lcount">sắp tới</span></span></li>
+    </ul>
+  </div>
+
+  <div class="module">
+    <div class="module-head"><span class="module-num">Module 3</span></div>
+    <h2>Kafka zero → Nest</h2>
+    <p class="module-why">Trọng tâm mission — semantics + integrate Nest + idempotent consumer.</p>
+    <ul class="lessons-list">
+      <li><span class="soon"><span class="badge soon">Bài 16–23</span> Topic/consumer group → EventPattern → retry/DLQ <span class="lcount">sắp tới</span></span></li>
+    </ul>
+  </div>
+
+  <div class="module">
+    <div class="module-head"><span class="module-num">Module 4–5</span></div>
+    <h2>E2E flow + Interview sprint</h2>
+    <p class="module-why">Ghép payment→notify; mock interview trước deadline.</p>
+    <ul class="lessons-list">
+      <li><span class="soon"><span class="badge soon">Bài 24–27</span> Webhook → Kafka → notification E2E <span class="lcount">sắp tới</span></span></li>
+      <li><span class="soon"><span class="badge soon">Bài 28–32</span> System design + mock interview <span class="lcount">sắp tới</span></span></li>
+    </ul>
+  </div>
+
+  <div class="module">
+    <div class="module-head"><span class="module-num">Sprint B</span></div>
+    <h2>Senior sâu (sau phỏng vấn)</h2>
+    <p class="module-why">Outbox, saga, observability, challenge mode — ~25–35 bài.</p>
+    <ul class="lessons-list">
+      <li><span class="soon"><span class="badge soon">Bài 33+</span> Hardening &amp; challenge mode <span class="lcount">sắp tới</span></span></li>
+    </ul>
+  </div>
+
+  <p class="try-it" style="text-align:center; margin-top:40px;">
+    📌 Lộ trình <strong>co giãn</strong>: nắm nhanh thì gộp bài, vấp thì tách thêm bài luyện.<br>
+    Muốn thêm/bớt/đổi thứ tự — cứ nói với tôi (người dạy) bất cứ lúc nào.
+  </p>
+</div>
+</body>
+</html>
