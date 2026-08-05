@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 01 · Cấu trúc Nest + config 12-factor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 0 · Bài 01</span>
+  <h1>Cấu trúc Nest + config 12-factor</h1>
+  <p class="subtitle">Win: thiếu <code>MONGODB_URI</code> thì app <strong>không start</strong>; có đủ env thì <code>/health</code> vẫn xanh — Health tách thành module riêng.</p>
+  <p class="meta-line">⏱ ~40–50 phút · 🎯 Mục tiêu: fail-fast config + module boundary trước khi viết Catalog.</p>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu từ Bài 00</div>
+    <p>Bạn đã có Nest nối Mongo qua <code>ConfigModule</code> + default URI trong code. Default “tiện” local nhưng nguy hiểm production: deploy quên set env → app lặng lẽ trỏ localhost và chết khó hiểu. Bài này siết đúng một việc: <strong>validate env lúc bootstrap</strong> + tách <code>HealthModule</code> khỏi “god” <code>AppModule</code>.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao làm trước Catalog?</div>
+    <p>Product company kỳ vọng app chết sớm (fail fast) khi config sai — không phải 500 lúc request đầu tiên. Theo <a href="https://12factor.net/config" target="_blank">Twelve-Factor: Config</a>, config nằm trong môi trường. Nest hỗ trợ schema Joi qua <code>ConfigModule.forRoot({ validationSchema })</code> — xem <a href="https://docs.nestjs.com/techniques/configuration#schema-validation" target="_blank">Nest Configuration — Schema validation</a>.</p>
+  </div>
+
+  <h2>1. Module boundary: Health không nằm trong AppModule</h2>
+  <p>CRUD freelance hay nhét mọi controller vào <code>AppModule</code>. Khi có catalog/cart/order, file đó thành bãi rác. Pattern Nest: mỗi feature một module, <code>AppModule</code> chỉ <em>ghép</em>.</p>
+
+  <div class="code-block">
+    <span class="code-label">bash — cài Joi (đặt TRƯỚC khi import)</span>
+<pre><code><span class="kw">cd</span> shopstream/api
+npm install joi
+<span class="cmt"># Đã verify với joi@18.2.3 trên lockfile Nest 11 của bạn</span></code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/health/health.module.ts (file mới)</span>
+<pre><code><span class="kw">import</span> { Module } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { HealthController } <span class="kw">from</span> <span class="str">'./health.controller'</span>;
+
+<span class="kw">@Module</span>({
+  controllers: [HealthController],
+})
+<span class="kw">export class</span> <span class="fn">HealthModule</span> {}</code></pre>
+  </div>
+
+  <h2>2. Schema env — bắt buộc MONGODB_URI</h2>
+  <p><code>required()</code> khiến Nest ném <code>Config validation error</code> ngay khi bootstrap nếu thiếu biến. <code>PORT</code> / <code>NODE_ENV</code> có default hợp lý; URI thì <strong>không</strong> default ngầm trong schema (tránh deploy nhầm).</p>
+
+  <div class="code-block">
+    <span class="code-label">src/config/env.validation.ts (file mới — cần mkdir -p src/config)</span>
+<pre><code><span class="kw">import</span> * <span class="kw">as</span> Joi <span class="kw">from</span> <span class="str">'joi'</span>;
+
+<span class="cmt">// Validate process.env lúc bootstrap — fail fast</span>
+<span class="kw">export const</span> envValidationSchema = Joi.object({
+  NODE_ENV: Joi.string()
+    .valid(<span class="str">'development'</span>, <span class="str">'production'</span>, <span class="str">'test'</span>)
+    .default(<span class="str">'development'</span>),
+  PORT: Joi.number().port().default(<span class="num">3000</span>),
+  <span class="cmt">// Bắt buộc: không soft-default URI production → localhost</span>
+  MONGODB_URI: Joi.string().min(<span class="num">1</span>).required(),
+});</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">bash — tạo thư mục config</span>
+<pre><code>mkdir -p src/config</code></pre>
+  </div>
+
+  <h2>3. Ghép vào AppModule + main đọc PORT từ ConfigService</h2>
+
+  <div class="code-block">
+    <span class="code-label">src/app.module.ts</span>
+<pre><code><span class="kw">import</span> { Module } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { ConfigModule, ConfigService } <span class="kw">from</span> <span class="str">'@nestjs/config'</span>;
+<span class="kw">import</span> { MongooseModule } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { AppController } <span class="kw">from</span> <span class="str">'./app.controller'</span>;
+<span class="kw">import</span> { AppService } <span class="kw">from</span> <span class="str">'./app.service'</span>;
+<span class="kw">import</span> { envValidationSchema } <span class="kw">from</span> <span class="str">'./config/env.validation'</span>;
+<span class="kw">import</span> { HealthModule } <span class="kw">from</span> <span class="str">'./health/health.module'</span>;
+
+<span class="kw">@Module</span>({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: <span class="kw">true</span>,
+      validationSchema: envValidationSchema,
+      validationOptions: { abortEarly: <span class="kw">false</span> }, <span class="cmt">// báo đủ lỗi một lần</span>
+    }),
+    MongooseModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        <span class="cmt">// getOrThrow: TypeScript + runtime đều không cho undefined</span>
+        uri: config.getOrThrow&lt;string&gt;(<span class="str">'MONGODB_URI'</span>),
+      }),
+    }),
+    HealthModule,
+  ],
+  controllers: [AppController],
+  providers: [AppService],
+})
+<span class="kw">export class</span> <span class="fn">AppModule</span> {}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/main.ts</span>
+<pre><code><span class="kw">import</span> { NestFactory } <span class="kw">from</span> <span class="str">'@nestjs/core'</span>;
+<span class="kw">import</span> { ConfigService } <span class="kw">from</span> <span class="str">'@nestjs/config'</span>;
+<span class="kw">import</span> { AppModule } <span class="kw">from</span> <span class="str">'./app.module'</span>;
+
+<span class="kw">async function</span> <span class="fn">bootstrap</span>() {
+  <span class="kw">const</span> app = <span class="kw">await</span> NestFactory.create(AppModule);
+  <span class="kw">const</span> config = app.get(ConfigService);
+  <span class="kw">const</span> port = config.get&lt;number&gt;(<span class="str">'PORT'</span>, <span class="num">3000</span>);
+  <span class="kw">await</span> app.listen(port);
+  console.log(<span class="str">`ShopStream API đang lắng nghe http://localhost:${port}`</span>);
+}
+bootstrap();</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">.env.example</span>
+<pre><code><span class="cmt"># Bắt buộc — app không start nếu thiếu</span>
+MONGODB_URI=mongodb://127.0.0.1:27017/shopstream
+PORT=3000
+NODE_ENV=development</code></pre>
+  </div>
+
+  <h2>4. Sanity check (bắt buộc gửi kết quả)</h2>
+
+  <div class="code-block">
+    <span class="code-label">bash — đường hạnh phúc</span>
+<pre><code><span class="cmt"># Đảm bảo .env có MONGODB_URI</span>
+cp -n .env.example .env
+npm run start:dev
+<span class="cmt"># terminal khác:</span>
+curl -s http://localhost:3000/health
+npm test</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">bash — đường thất bại (prove fail-fast)</span>
+<pre><code><span class="cmt"># Tạm đổi .env: chỉ còn NODE_ENV (xoá dòng MONGODB_URI)</span>
+<span class="cmt"># rồi chạy — phải thấy lỗi validation, không listen port</span>
+npm run start
+<span class="cmt"># Kỳ vọng chứa: Config validation error: "MONGODB_URI" is required</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> “Config trong code vs env — chọn thế nào?”<br>
+    <strong>A gọn:</strong> Secret/URI/feature flag theo môi trường → env (12-factor). Default an toàn cho local OK với biến không nhạy cảm (<code>PORT</code>); biến quyết định “nói chuyện với hệ thống nào” (<code>MONGODB_URI</code>) nên <em>required</em>, không default ngầm production.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Vì sao không để <code>MONGODB_URI</code> default <code>mongodb://localhost/...</code> trong Joi schema?</div>
+    <button class="opt" data-correct="false" data-explain="Sai — default local vẫn 'chạy' nhưng che lỗi cấu hình production.">A. Vì localhost nhanh hơn cloud URI</button>
+    <button class="opt" data-correct="true" data-explain="Đúng — fail fast buộc DevOps/CI set đúng URI; tránh app 'chạy' nhưng trỏ nhầm.">B. Để deploy thiếu env chết ngay lúc start, không lặng lẽ nối nhầm DB</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Joi hoàn toàn hỗ trợ default(); vấn đề là có NÊN default URI hay không.">C. Vì Joi không cho phép default()</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Tách <code>HealthModule</code> khỏi khai báo controller trong <code>AppModule</code> chủ yếu để làm gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — AppModule ghép feature modules; mỗi domain (sau này Catalog) một module.">A. Giữ boundary feature — AppModule chỉ compose, không chứa controller</button>
+    <button class="opt" data-correct="false" data-explain="Sai — performance gần như không đổi.">B. Để Nest chạy nhanh gấp đôi</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Health vẫn HTTP bình thường.">C. Bắt buộc để Kafka hoạt động</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist nộp bài</div>
+    <ul class="checklist">
+      <li><code>joi</code> có trong <code>package.json</code></li>
+      <li>Có <code>src/config/env.validation.ts</code> + <code>src/health/health.module.ts</code></li>
+      <li><code>curl /health</code> → mongo up (khi .env đủ)</li>
+      <li>Chạy thiếu <code>MONGODB_URI</code> → log có <code>Config validation error: "MONGODB_URI" is required</code></li>
+      <li><code>npm test</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>5. Câu hỏi tư duy</h2>
+  <p>Khi thêm Catalog module, bạn sẽ để schema Product ở đâu — <code>AppModule</code>, <code>CatalogModule</code>, hay shared <code>DatabaseModule</code>? Trade-off gì với tốc độ ship trước phỏng vấn?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 02 · Testing baseline Nest</div>
+    <p class="nd">Viết test cho Health + config validation — nâng testing từ “có chạy Jest” lên thói quen production.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0000-dung-moi-truong-shopstream.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Làm checklist rồi paste (1) output lỗi khi thiếu URI và (2) <code>curl /health</code> khi đủ env. Code lệch — hỏi trước khi copy bừa.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
