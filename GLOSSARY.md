@@ -13,3 +13,5 @@
 | **Unit test** | Test một đơn vị + mock dependency; nhanh, không cần Docker. |
 | **getConnectionToken()** | Token DI của connection Mongoose mặc định — dùng để mock trong test Health. |
 | **TestingModule** | Module Nest dựng bởi `Test.createTestingModule` cho unit/integration test. |
+| **exports (module)** | Public API của module: provider được export mới inject được ở module khác khi import. |
+| **Shared module / singleton provider** | Import module đã export → cùng một instance service (tránh Map/state lệch). |
