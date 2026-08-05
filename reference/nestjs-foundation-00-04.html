@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cheat-sheet · Nest foundation (Bài 00–04)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../lessons/lesson.css">
+</head>
+<body>
+<div class="wrap">
+  <span class="lesson-tag">Reference · in được</span>
+  <h1>Nest foundation — ShopStream</h1>
+  <p class="subtitle">Cô đọng Bài 00–04: Compose, config fail-fast, module/DI, ValidationPipe.</p>
+
+  <h2>Stack local</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>cd shopstream && docker compose up -d
+cd api && npm run start:dev
+curl -s http://localhost:3000/health</code></pre>
+  </div>
+
+  <h2>Config 12-factor</h2>
+  <ul>
+    <li><code>ConfigModule.forRoot({ validationSchema })</code> — Joi <code>MONGODB_URI</code> <strong>required</strong></li>
+    <li>Thiếu env → <code>Config validation error</code> lúc start (fail fast)</li>
+    <li><code>config.getOrThrow('MONGODB_URI')</code> cho Mongo</li>
+  </ul>
+
+  <h2>Feature module</h2>
+  <table class="data">
+    <thead><tr><th>Mảnh</th><th>Vai trò</th></tr></thead>
+    <tbody>
+      <tr><td>controllers</td><td>HTTP only</td></tr>
+      <tr><td>providers</td><td>Service / logic</td></tr>
+      <tr><td>exports</td><td>Public API — module khác import để dùng cùng instance</td></tr>
+      <tr><td>AppModule</td><td>Chỉ compose (<code>HealthModule</code>, <code>CatalogModule</code>…)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>ValidationPipe (global)</h2>
+  <div class="code-block">
+    <span class="code-label">main.ts</span>
+<pre><code>app.useGlobalPipes(<span class="kw">new</span> ValidationPipe({
+  whitelist: <span class="kw">true</span>,
+  forbidNonWhitelisted: <span class="kw">true</span>,
+  transform: <span class="kw">true</span>,
+}));</code></pre>
+  </div>
+  <p>DTO = class + decorator (<code>@IsString</code>, <code>@Min</code>…). Field lạ → 400 khi forbid.</p>
+
+  <h2>Test nhanh</h2>
+  <ul>
+    <li>Health: mock <code>getConnectionToken()</code> + <code>readyState</code></li>
+    <li>Env: <code>envValidationSchema.validate(...)</code></li>
+    <li>Service: <code>new ProductsService()</code> (unit thuần)</li>
+  </ul>
+
+  <h2>Lệnh ôn</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>npm test
+curl -s -X POST .../catalog/products -d <span class="str">'{"extra":1}'</span>   <span class="cmt"># kỳ vọng 400</span></code></pre>
+  </div>
+
+  <p class="try-it"><a href="../lessons/index.html">← Mục lục bài học</a></p>
+</div>
+<script src="../lessons/lesson-enhance.js"></script>
+</body>
+</html>

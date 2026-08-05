@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
-import { CreateProductInput } from './product.types';
+import { CreateProductDto } from './dto/create-product.dto';
 import { ProductsService } from './products.service';
 
 @Controller('catalog/products')
@@ -13,7 +13,7 @@ export class ProductsController {
   }
 
   @Post()
-  create(@Body() body: CreateProductInput) {
+  create(@Body() body: CreateProductDto) {
     // Chưa ValidationPipe — Bài 04 sẽ siết DTO
     return this.productsService.create(body);
   }

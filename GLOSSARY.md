@@ -15,3 +15,6 @@
 | **TestingModule** | Module Nest dựng bởi `Test.createTestingModule` cho unit/integration test. |
 | **exports (module)** | Public API của module: provider được export mới inject được ở module khác khi import. |
 | **Shared module / singleton provider** | Import module đã export → cùng một instance service (tránh Map/state lệch). |
+| **DTO** | Class mô tả shape input/output HTTP; kết hợp decorator `class-validator`. |
+| **ValidationPipe** | Pipe Nest validate/transform body theo DTO; thường `whitelist` + `forbidNonWhitelisted`. |
+| **Exception filter** | Bắt exception HTTP và format JSON lỗi thống nhất (statusCode, message, …). |
