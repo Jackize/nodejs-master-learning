@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 03 · CatalogModule + DI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 1 · Bài 03</span>
+  <h1>CatalogModule + DI (skeleton)</h1>
+  <p class="subtitle">Win: <code>POST/GET /catalog/products</code> chạy được; product nằm trong <strong>feature module</strong> riêng, service được <code>export</code> để Cart sau này dùng chung instance.</p>
+  <p class="meta-line">⏱ ~40 phút · 🎯 Mục tiêu: hiểu encapsulation module Nest — không phải full CRUD Mongo.</p>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Freelance CRUD hay nhét mọi thứ vào <code>AppModule</code>. Nest docs gọi nhóm theo domain là <strong>feature module</strong> — xem <a href="https://docs.nestjs.com/modules#feature-modules" target="_blank">Modules — Feature modules</a>. Catalog là domain đầu tiên của ShopStream; Cart/Order sẽ <em>import</em> module này, không copy service.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao store tạm trong RAM?</div>
+    <p>Bài này dạy <strong>một thứ</strong>: boundary module + DI. Mongo schema/index = Bài 05; ValidationPipe = Bài 04. Ghép hết một lúc = over-engineer và khó chẩn lỗi. RAM đủ để chứng minh API + test xanh.</p>
+  </div>
+
+  <h2>1. Cấu trúc catalog/</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/catalog</code></pre>
+  </div>
+  <table class="data">
+    <thead><tr><th>File</th><th>Vai trò</th></tr></thead>
+    <tbody>
+      <tr><td><code>product.types.ts</code></td><td>Product type + class input (cần class vì decorator metadata)</td></tr>
+      <tr><td><code>products.service.ts</code></td><td>Logic + Map in-memory</td></tr>
+      <tr><td><code>products.controller.ts</code></td><td>HTTP → gọi service (không chứa business)</td></tr>
+      <tr><td><code>catalog.module.ts</code></td><td>controllers + providers + <strong>exports</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h2>2. Service + Controller + Module</h2>
+
+  <div class="code-block">
+    <span class="code-label">src/catalog/product.types.ts</span>
+<pre><code><span class="kw">export type</span> Product = {
+  id: string;
+  name: string;
+  price: number;
+  stock: number;
+};
+
+<span class="cmt">/** Class — không dùng type-only với @Body() khi emitDecoratorMetadata bật */</span>
+<span class="kw">export class</span> <span class="fn">CreateProductInput</span> {
+  name!: string;
+  price!: number;
+  stock!: number;
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/catalog/products.service.ts</span>
+<pre><code><span class="kw">import</span> { Injectable } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { randomUUID } <span class="kw">from</span> <span class="str">'crypto'</span>;
+<span class="kw">import</span> { CreateProductInput, Product } <span class="kw">from</span> <span class="str">'./product.types'</span>;
+
+<span class="kw">@Injectable</span>()
+<span class="kw">export class</span> <span class="fn">ProductsService</span> {
+  <span class="cmt">// RAM tạm — Bài 05 thay Mongo</span>
+  <span class="kw">private readonly</span> products = <span class="kw">new</span> <span class="fn">Map</span>&lt;string, Product&gt;();
+
+  <span class="fn">findAll</span>(): Product[] {
+    <span class="kw">return</span> [...<span class="kw">this</span>.products.values()];
+  }
+
+  <span class="fn">create</span>(input: CreateProductInput): Product {
+    <span class="kw">const</span> product: Product = {
+      id: randomUUID(),
+      name: input.name,
+      price: input.price,
+      stock: input.stock,
+    };
+    <span class="kw">this</span>.products.set(product.id, product);
+    <span class="kw">return</span> product;
+  }
+
+  <span class="fn">findById</span>(id: string): Product | <span class="kw">undefined</span> {
+    <span class="kw">return</span> <span class="kw">this</span>.products.get(id);
+  }
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/catalog/products.controller.ts</span>
+<pre><code><span class="kw">import</span> { Body, Controller, Get, Post } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { CreateProductInput } <span class="kw">from</span> <span class="str">'./product.types'</span>;
+<span class="kw">import</span> { ProductsService } <span class="kw">from</span> <span class="str">'./products.service'</span>;
+
+<span class="kw">@Controller</span>(<span class="str">'catalog/products'</span>)
+<span class="kw">export class</span> <span class="fn">ProductsController</span> {
+  <span class="cmt">// DI: Nest tạo ProductsService vì CatalogModule khai báo providers</span>
+  <span class="kw">constructor</span>(<span class="kw">private readonly</span> productsService: ProductsService) {}
+
+  <span class="kw">@Get</span>()
+  <span class="fn">list</span>() {
+    <span class="kw">return</span> <span class="kw">this</span>.productsService.findAll();
+  }
+
+  <span class="kw">@Post</span>()
+  <span class="fn">create</span>(@<span class="fn">Body</span>() body: CreateProductInput) {
+    <span class="kw">return</span> <span class="kw">this</span>.productsService.create(body);
+  }
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/catalog/catalog.module.ts</span>
+<pre><code><span class="kw">import</span> { Module } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { ProductsController } <span class="kw">from</span> <span class="str">'./products.controller'</span>;
+<span class="kw">import</span> { ProductsService } <span class="kw">from</span> <span class="str">'./products.service'</span>;
+
+<span class="kw">@Module</span>({
+  controllers: [ProductsController],
+  providers: [ProductsService],
+  <span class="cmt">// Shared module: cùng 1 instance khi Cart import CatalogModule</span>
+  exports: [ProductsService],
+})
+<span class="kw">export class</span> <span class="fn">CatalogModule</span> {}</code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Export ≠ đăng ký lại provider</div>
+    <p>Theo docs: nếu khai báo <code>ProductsService</code> trong nhiều module thay vì export/import, mỗi module nhận <strong>instance riêng</strong> — state Map sẽ lệch. Đó là lý do Cart sau này <code>imports: [CatalogModule]</code>.</p>
+  </div>
+
+  <h2>3. Import vào AppModule</h2>
+  <div class="code-block">
+    <span class="code-label">src/app.module.ts (thêm vào imports)</span>
+<pre><code><span class="kw">import</span> { CatalogModule } <span class="kw">from</span> <span class="str">'./catalog/catalog.module'</span>;
+<span class="cmt">// ...</span>
+imports: [
+  <span class="cmt">/* Config + Mongoose + HealthModule như cũ */</span>
+  CatalogModule,
+],</code></pre>
+  </div>
+
+  <h2>4. Unit test service + sanity HTTP</h2>
+  <div class="code-block">
+    <span class="code-label">src/catalog/products.service.spec.ts</span>
+<pre><code><span class="kw">import</span> { ProductsService } <span class="kw">from</span> <span class="str">'./products.service'</span>;
+
+describe(<span class="str">'ProductsService'</span>, () => {
+  <span class="kw">let</span> service: ProductsService;
+  beforeEach(() => { service = <span class="kw">new</span> <span class="fn">ProductsService</span>(); });
+
+  it(<span class="str">'ban đầu danh sách rỗng'</span>, () => {
+    expect(service.findAll()).toEqual([]);
+  });
+
+  it(<span class="str">'create rồi findAll có 1 sản phẩm'</span>, () => {
+    <span class="kw">const</span> created = service.create({ name: <span class="str">'Áo thun'</span>, price: <span class="num">199000</span>, stock: <span class="num">10</span> });
+    expect(created.id).toBeDefined();
+    expect(service.findAll()).toHaveLength(<span class="num">1</span>);
+    expect(service.findById(created.id)).toEqual(created);
+  });
+});</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>npm test
+<span class="cmt"># Kỳ vọng: ≥7 passed (5 cũ + 2 ProductsService)</span>
+
+npm run start:dev
+curl -s http://localhost:3000/catalog/products
+curl -s -X POST http://localhost:3000/catalog/products \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"name":"Áo","price":100,"stock":2}'</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> “Module Nest giải quyết vấn đề gì?”<br>
+    <strong>A gọn:</strong> Tổ chức theo domain, kiểm soát public API qua <code>exports</code>, chia sẻ singleton provider an toàn — tránh god module và instance trùng.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. CartModule muốn dùng ProductsService đúng cách?</div>
+    <button class="opt" data-correct="false" data-explain="Sai — tạo instance thứ hai, Map catalog không chia sẻ.">A. Khai báo lại ProductsService trong providers của CartModule</button>
+    <button class="opt" data-correct="true" data-explain="Đúng — import module đã export service → cùng instance.">B. imports: [CatalogModule] (Catalog đã exports ProductsService)</button>
+    <button class="opt" data-correct="false" data-explain="Sai — global mọi thứ làm mất boundary.">C. Đánh @Global() mọi module cho nhanh</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Vì sao CreateProductInput là class, không phải type?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — với isolatedModules + emitDecoratorMetadata, type trong decorated signature cần import value/class.">A. Decorator metadata cần giá trị runtime; type bị xoá khi compile</button>
+    <button class="opt" data-correct="false" data-explain="Sai — TypeScript vẫn hỗ trợ type.">B. Nest cấm dùng type alias</button>
+    <button class="opt" data-correct="false" data-explain="Sai — class chưa có validation ở bài này.">C. Vì class tự validate input</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li><code>CatalogModule</code> trong <code>AppModule.imports</code> + <code>exports: [ProductsService]</code></li>
+      <li><code>npm test</code> ≥ 7 passed</li>
+      <li><code>POST</code> rồi <code>GET /catalog/products</code> thấy sản phẩm (RAM — restart mất data là bình thường)</li>
+    </ul>
+  </div>
+
+  <h2>5. Câu hỏi tư duy</h2>
+  <p>POST <code>{"name":1,"price":"abc"}</code> hiện Nest vẫn nhận. Ai nên chặn — controller, service, hay pipe toàn cục? (Bài 04.)</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 04 · DTO + ValidationPipe + error shape</div>
+    <p class="nd">Siết input Catalog; response lỗi thống nhất cho API product.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0002-testing-baseline-nest.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Paste <code>npm test</code> summary + output <code>POST</code>/<code>GET</code> products. Data mất sau restart — đúng vì RAM; đừng “fix” bằng Mongo sớm trừ khi hỏi.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

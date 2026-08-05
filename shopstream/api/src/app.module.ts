@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { CatalogModule } from './catalog/catalog.module';
 import { envValidationSchema } from './config/env.validation';
 import { HealthModule } from './health/health.module';
 
@@ -11,7 +12,6 @@ import { HealthModule } from './health/health.module';
     ConfigModule.forRoot({
       isGlobal: true,
       validationSchema: envValidationSchema,
-      // Báo đủ mọi lỗi env một lần, không dừng ở field đầu
       validationOptions: { abortEarly: false },
     }),
     MongooseModule.forRootAsync({
@@ -21,6 +21,7 @@ import { HealthModule } from './health/health.module';
       }),
     }),
     HealthModule,
+    CatalogModule,
   ],
   controllers: [AppController],
   providers: [AppService],
