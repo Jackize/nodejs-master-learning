@@ -6,3 +6,13 @@ export type ProductResponse = {
   price: number;
   stock: number;
 };
+
+export type PaginatedProducts = {
+  data: ProductResponse[];
+  meta: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+};

@@ -21,3 +21,5 @@
 | **Mongoose schema** | Định nghĩa shape document Mongo (Nest: `@Schema` / `@Prop` / `SchemaFactory`). |
 | **Compound index** | Index nhiều field (vd `{ stock: 1, price: 1 }`) khớp filter+sort theo thứ tự prefix. |
 | **getModelToken** | Token DI của Mongoose model — mock trong unit test thay vì nối DB. |
+| **Soft delete** | Đánh dấu xoá (`deletedAt`) thay vì remove document; query active phải lọc. |
+| **Offset pagination** | `skip`/`limit` + `total`; đơn giản nhưng deep page kém hiệu năng. |

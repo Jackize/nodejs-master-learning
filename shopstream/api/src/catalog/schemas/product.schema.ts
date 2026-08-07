@@ -13,6 +13,9 @@ export class Product {
 
   @Prop({ required: true, min: 0 })
   stock!: number;
+
+  @Prop({ type: Date, default: null })
+  deletedAt?: Date | null;
 }
 
 export const ProductSchema = SchemaFactory.createForClass(Product);
@@ -20,3 +23,4 @@ export const ProductSchema = SchemaFactory.createForClass(Product);
 // create index single field and compound index
 ProductSchema.index({ name: 1 });
 ProductSchema.index({ stock: 1, price: 1 });
+ProductSchema.index({ deletedAt: 1, createdAt: -1 });
