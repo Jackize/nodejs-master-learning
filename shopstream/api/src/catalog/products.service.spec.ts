@@ -1,4 +1,4 @@
-import { Model } from 'mongoose';
+import mongoose, { Model } from 'mongoose';
 import { ProductsService } from './products.service';
 import { ProductDocument } from './schemas/product.schema';
 
@@ -31,6 +31,7 @@ describe('ProductsService', () => {
 
   it('create rồi findAll trả về sản phẩm vừa tạo', async () => {
     const product = {
+      _id: new mongoose.Types.ObjectId(),
       name: 'Áo thun',
       price: 199000,
       stock: 10,

@@ -8,10 +8,10 @@ export class Product {
   @Prop({ required: true, trim: true })
   name!: string;
 
-  @Prop({ required: true, trim: true })
+  @Prop({ required: true, min: 0 })
   price!: number;
 
-  @Prop({ required: true, trim: true })
+  @Prop({ required: true, min: 0 })
   stock!: number;
 }
 

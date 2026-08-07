@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 06 · Soft delete + pagination</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 1 · Bài 06</span>
+  <h1>Soft delete + pagination</h1>
+  <p class="subtitle">Win: <code>GET ?page&amp;limit</code> trả <code>{ data, meta }</code>; <code>DELETE</code> ẩn sp (không xoá document); list không còn sp đã xoá; có index <code>deletedAt_1_createdAt_-1</code>.</p>
+  <p class="meta-line">⏱ ~50–70 phút · 🎯 Tự code — verify sandbox: 8 tests · pagination + soft-delete OK.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không apply sẵn vào <code>shopstream/</code>. Đọc → tự sửa schema/service/controller/test → nộp bằng chứng.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Catalog đã lưu Mongo. Ecommerce hầu như <strong>không hard-delete</strong> product (đơn cũ, báo cáo). Soft-delete = gắn <code>deletedAt</code>. List lớn cần <strong>skip/limit + total</strong>, không trả cả collection.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Soft-delete vs hard-delete</div>
+    <p>Hard-delete mất lịch sử / phá FK tinh thần (order line vẫn trỏ product). Soft-delete giữ audit; đánh đổi: mọi query “active” phải lọc <code>deletedAt: null</code> — quên một chỗ là “ma” hiện lại.</p>
+  </div>
+
+  <h2>1. Schema: thêm <code>deletedAt</code> + index list</h2>
+  <div class="code-block">
+    <span class="code-label">product.schema.ts — bổ sung</span>
+<pre><code><span class="cmt">// Trong class Product:</span>
+@<span class="fn">Prop</span>({ type: Date, default: <span class="kw">null</span> })
+deletedAt!: Date | <span class="kw">null</span>;
+
+<span class="cmt">// Sau SchemaFactory:</span>
+ProductSchema.index({ deletedAt: <span class="num">1</span>, createdAt: -<span class="num">1</span> });
+<span class="cmt">// Khớp filter deletedAt:null + sort createdAt desc</span></code></pre>
+  </div>
+
+  <h2>2. Query DTO phân trang</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code><span class="cmt"># Tự tạo file trong dto/</span></code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">src/catalog/dto/list-products-query.dto.ts</span>
+<pre><code><span class="kw">import</span> { Type } <span class="kw">from</span> <span class="str">'class-transformer'</span>;
+<span class="kw">import</span> { IsInt, IsOptional, Max, Min } <span class="kw">from</span> <span class="str">'class-validator'</span>;
+
+<span class="kw">export class</span> <span class="fn">ListProductsQueryDto</span> {
+  @<span class="fn">IsOptional</span>()
+  @<span class="fn">Type</span>(() => Number) <span class="cmt">// query string → number</span>
+  @<span class="fn">IsInt</span>()
+  @<span class="fn">Min</span>(<span class="num">1</span>)
+  page: number = <span class="num">1</span>;
+
+  @<span class="fn">IsOptional</span>()
+  @<span class="fn">Type</span>(() => Number)
+  @<span class="fn">IsInt</span>()
+  @<span class="fn">Min</span>(<span class="num">1</span>)
+  @<span class="fn">Max</span>(<span class="num">100</span>)
+  limit: number = <span class="num">10</span>;
+}</code></pre>
+  </div>
+
+  <h2>3. Service: filter + skip/limit + softDelete</h2>
+  <div class="code-block">
+    <span class="code-label">ý chính ProductsService</span>
+<pre><code><span class="kw">async</span> <span class="fn">findAll</span>(query: ListProductsQueryDto): Promise&lt;PaginatedProducts&gt; {
+  <span class="kw">const</span> page = query.page ?? <span class="num">1</span>;
+  <span class="kw">const</span> limit = query.limit ?? <span class="num">10</span>;
+  <span class="kw">const</span> filter = { deletedAt: <span class="kw">null</span> };
+  <span class="kw">const</span> [docs, total] = <span class="kw">await</span> Promise.all([
+    <span class="kw">this</span>.productModel.find(filter).sort({ createdAt: -<span class="num">1</span> })
+      .skip((page - <span class="num">1</span>) * limit).limit(limit).exec(),
+    <span class="kw">this</span>.productModel.countDocuments(filter).exec(),
+  ]);
+  <span class="kw">return</span> {
+    data: docs.map((d) => <span class="kw">this</span>.toResponse(d)),
+    meta: { page, limit, total, totalPages: Math.ceil(total / limit) || <span class="num">0</span> },
+  };
+}
+
+<span class="kw">async</span> <span class="fn">softDelete</span>(id: string): Promise&lt;<span class="kw">void</span>&gt; {
+  <span class="kw">const</span> doc = <span class="kw">await</span> <span class="kw">this</span>.productModel.findOneAndUpdate(
+    { _id: id, deletedAt: <span class="kw">null</span> },
+    { deletedAt: <span class="kw">new</span> Date() },
+    { new: <span class="kw">true</span> },
+  ).exec();
+  <span class="kw">if</span> (!doc) <span class="kw">throw new</span> <span class="fn">NotFoundException</span>(<span class="str">'Product not found'</span>);
+}
+
+<span class="cmt">// findById cũng phải: findOne({ _id, deletedAt: null }) + NotFoundException</span></code></pre>
+  </div>
+  <p>Thêm type <code>PaginatedProducts</code> trong <code>product.types.ts</code>. <code>create</code> nên set <code>deletedAt: null</code> tường minh.</p>
+
+  <h2>4. Controller</h2>
+  <div class="code-block">
+    <span class="code-label">products.controller.ts</span>
+<pre><code>@<span class="fn">Get</span>()
+<span class="fn">list</span>(@<span class="fn">Query</span>() query: ListProductsQueryDto) {
+  <span class="kw">return</span> <span class="kw">this</span>.productsService.findAll(query);
+}
+
+@<span class="fn">Delete</span>(<span class="str">':id'</span>)
+<span class="kw">async</span> <span class="fn">remove</span>(@<span class="fn">Param</span>(<span class="str">'id'</span>) id: string) {
+  <span class="kw">await</span> <span class="kw">this</span>.productsService.softDelete(id);
+  <span class="kw">return</span> { ok: <span class="kw">true</span> };
+}</code></pre>
+  </div>
+
+  <h2>5. Cập nhật unit test</h2>
+  <p>Mock thêm: <code>countDocuments</code>, chain <code>find().sort().skip().limit().exec()</code>, <code>findOneAndUpdate</code>. Í ít nhất: (1) list rỗng có meta, (2) softDelete → NotFound khi null, (3) create map id.</p>
+
+  <h2>6. Sanity (nộp)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>npm test && npm run build
+npm run start:dev
+
+<span class="cmt"># Tạo ≥3 sp rồi:</span>
+curl -s <span class="str">'http://localhost:3000/catalog/products?page=1&limit=2'</span>
+<span class="cmt"># Kỳ vọng meta.total ≥ 3, data.length === 2, totalPages ≥ 2</span>
+
+curl -s -X DELETE http://localhost:3000/catalog/products/&lt;id&gt;
+curl -s <span class="str">'http://localhost:3000/catalog/products?page=1&limit=10'</span>
+<span class="cmt"># sp đã xoá không còn trong data; total giảm</span>
+
+docker compose exec mongo mongosh shopstream --quiet --eval \
+  <span class="str">'db.products.getIndexes()'</span>
+<span class="cmt"># Có deletedAt_1_createdAt_-1</span>
+
+<span class="cmt"># Query xấu phải 400:</span>
+curl -s <span class="str">'http://localhost:3000/catalog/products?page=0&limit=999'</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Offset pagination (<code>skip</code>) yếu chỗ nào?<br>
+    <strong>A:</strong> Deep page chậm + lệch khi insert đồng thời. Cursor/<code>_id</code> seek ổn định hơn ở scale lớn — Bài này dùng offset vì catalog MVP + dễ hiểu; biết trade-off là đủ phỏng vấn junior→mid.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Sau soft-delete, <code>findById</code> không lọc <code>deletedAt</code> thì sao?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — “ma” vẫn đọc được; mọi đường đọc active phải cùng filter.">A. Vẫn trả product đã xoá — bug nhất quán</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Mongo không tự ẩn.">B. Mongo tự ẩn document</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. App crash</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Index <code>{ deletedAt: 1, createdAt: -1 }</code> phục vụ gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — filter active + sort mới nhất.">A. List active sort theo thời gian tạo</button>
+    <button class="opt" data-correct="false" data-explain="Sai — unique không liên quan.">B. Ép tên product unique</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Thay ValidationPipe</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>GET có <code>data</code> + <code>meta</code> (page, limit, total, totalPages)</li>
+      <li>DELETE soft — document còn trong Mongo (<code>deletedAt</code> khác null)</li>
+      <li>List không hiện sp đã xoá</li>
+      <li>Index <code>deletedAt_1_createdAt_-1</code></li>
+      <li><code>page=0</code> hoặc <code>limit=999</code> → 400</li>
+      <li><code>npm test</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>7. Câu hỏi tư duy</h2>
+  <p>Cart sắp thêm: khi add-to-cart, có nên cho phép product <code>deletedAt != null</code>? Ai chặn — Catalog service hay Cart?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 07 · Auth JWT tối thiểu</div>
+    <p class="nd">Buyer guard cho cart/order — catalog public đọc, ghi có thể siết sau.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0005-mongo-schema-index.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Tự code xong → paste: (1) GET phân trang (2) DELETE + GET sau xoá (3) <code>getIndexes()</code> (4) <code>npm test</code>. Mình đọc file repo rồi chấm.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
