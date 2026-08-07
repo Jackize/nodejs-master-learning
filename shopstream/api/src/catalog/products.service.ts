@@ -1,28 +1,38 @@
 import { Injectable } from '@nestjs/common';
-import { randomUUID } from 'crypto';
-import { CreateProductInput, Product } from './product.types';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { CreateProductDto } from './dto/create-product.dto';
+import { ProductResponse } from './product.types';
+import { Product, ProductDocument } from './schemas/product.schema';
 
 @Injectable()
 export class ProductsService {
-  // Store tạm trong RAM — Bài 05 thay bằng Mongo; đủ để học DI/module
-  private readonly products = new Map<string, Product>();
+  constructor(
+    @InjectModel(Product.name)
+    private readonly productModel: Model<ProductDocument>,
+  ) {}
 
-  findAll(): Product[] {
-    return [...this.products.values()];
-  }
-
-  create(input: CreateProductInput): Product {
-    const product: Product = {
-      id: randomUUID(),
-      name: input.name,
-      price: input.price,
-      stock: input.stock,
+  private toResponse(doc: ProductDocument): ProductResponse {
+    return {
+      id: String(doc._id),
+      name: doc.name,
+      price: doc.price,
+      stock: doc.stock,
     };
-    this.products.set(product.id, product);
-    return product;
   }
 
-  findById(id: string): Product | undefined {
-    return this.products.get(id);
+  async findAll(): Promise<ProductResponse[]> {
+    const docs = await this.productModel.find().sort({ createdAt: -1 }).exec();
+    return docs.map((d) => this.toResponse(d));
+  }
+
+  async create(input: CreateProductDto): Promise<ProductResponse> {
+    const doc = await this.productModel.create({ ...input });
+    return this.toResponse(doc);
+  }
+
+  async findById(id: string): Promise<ProductResponse | undefined> {
+    const doc = await this.productModel.findById(id).exec();
+    return doc ? this.toResponse(doc) : undefined;
   }
 }

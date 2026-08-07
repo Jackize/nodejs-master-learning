@@ -18,3 +18,6 @@
 | **DTO** | Class mô tả shape input/output HTTP; kết hợp decorator `class-validator`. |
 | **ValidationPipe** | Pipe Nest validate/transform body theo DTO; thường `whitelist` + `forbidNonWhitelisted`. |
 | **Exception filter** | Bắt exception HTTP và format JSON lỗi thống nhất (statusCode, message, …). |
+| **Mongoose schema** | Định nghĩa shape document Mongo (Nest: `@Schema` / `@Prop` / `SchemaFactory`). |
+| **Compound index** | Index nhiều field (vd `{ stock: 1, price: 1 }`) khớp filter+sort theo thứ tự prefix. |
+| **getModelToken** | Token DI của Mongoose model — mock trong unit test thay vì nối DB. |
