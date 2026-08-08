@@ -55,7 +55,8 @@ export class ProductsService {
     const doc = await this.productModel
       .findOne({ _id: id, deletedAt: null })
       .exec();
-    return doc ? this.toResponse(doc) : undefined;
+    if (!doc) throw new NotFoundException('Product not found');
+    return this.toResponse(doc);
   }
 
   async softDelete(id: string): Promise<void> {

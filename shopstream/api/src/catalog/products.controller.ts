@@ -23,7 +23,6 @@ export class ProductsController {
 
   @Post()
   create(@Body() body: CreateProductDto) {
-    // Chưa ValidationPipe — Bài 04 sẽ siết DTO
     return this.productsService.create(body);
   }
 

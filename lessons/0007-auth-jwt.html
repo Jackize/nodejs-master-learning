@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 07 · Auth JWT tối thiểu</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 1 · Bài 07</span>
+  <h1>Auth JWT tối thiểu (buyer)</h1>
+  <p class="subtitle">Win: <code>POST /auth/register|login</code> trả <code>accessToken</code>; <code>GET /auth/me</code> cần Bearer — không token → 401; sai password → 401.</p>
+  <p class="meta-line">⏱ ~60–90 phút · 🎯 Tự code — verify: <code>@nestjs/jwt@11.0.2</code>, <code>bcrypt@6.0.0</code>, 10 tests xanh.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill vào <code>shopstream/</code>. Catalog tạm thời vẫn public — bài này dựng Auth + <code>JwtAuthGuard</code> để Cart/Order (bài sau) reuse.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Cart/Order cần biết “ai” đang mua. JWT = stateless identity sau login. Nest: Passport JWT strategy + Guard — xem <a href="https://docs.nestjs.com/security/authentication" target="_blank">Nest Authentication</a> và <a href="https://docs.nestjs.com/security/authentication#jwt-functionality" target="_blank">JWT</a>.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao hash password + secret trong env?</div>
+    <p>Lưu plaintext = thảm họa. <code>bcrypt.hash</code> chậm có chủ đích (chống brute-force). <code>JWT_SECRET</code> required trong Joi (Bài 01 mindset) — thiếu secret thì app không start.</p>
+  </div>
+
+  <h2>1. Cài package (đúng tên, trước khi import)</h2>
+  <div class="code-block">
+    <span class="code-label">bash — shopstream/api</span>
+<pre><code>npm install @nestjs/jwt @nestjs/passport passport passport-jwt bcrypt
+npm install -D @types/passport-jwt @types/bcrypt
+<span class="cmt"># Đã verify: @nestjs/jwt@11.0.2 · passport-jwt@4.0.1 · bcrypt@6.0.0</span></code></pre>
+  </div>
+
+  <h2>2. Env: JWT_SECRET bắt buộc</h2>
+  <div class="code-block">
+    <span class="code-label">env.validation.ts — thêm</span>
+<pre><code>JWT_SECRET: Joi.string().min(<span class="num">16</span>).required(),
+<span class="cmt">// giây (number) — tránh lỗi type expiresIn string với @nestjs/jwt 11</span>
+JWT_EXPIRES_IN: Joi.number().integer().positive().default(<span class="num">86400</span>),</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">.env / .env.example</span>
+<pre><code>JWT_SECRET=dev-secret-at-least-16-chars
+JWT_EXPIRES_IN=86400</code></pre>
+  </div>
+  <p>Cập nhật <code>env.validation.spec.ts</code>: case thiếu <code>JWT_SECRET</code> phải fail.</p>
+
+  <h2>3. UsersModule (schema + service)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/users/schemas src/auth/dto</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">user.schema.ts — ý chính</span>
+<pre><code>@<span class="fn">Schema</span>({ timestamps: <span class="kw">true</span>, collection: <span class="str">'users'</span> })
+<span class="kw">export class</span> <span class="fn">User</span> {
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, unique: <span class="kw">true</span>, lowercase: <span class="kw">true</span>, trim: <span class="kw">true</span> })
+  email!: string;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, select: <span class="kw">false</span> }) <span class="cmt">// không lộ hash khi find thường</span>
+  passwordHash!: string;
+}</code></pre>
+  </div>
+  <p><code>UsersService</code>: <code>create</code>, <code>findByEmail</code> (dùng <code>.select('+passwordHash')</code>), <code>findById</code>. Export service từ <code>UsersModule</code>.</p>
+
+  <h2>4. AuthModule: register / login / JWT strategy / guard</h2>
+  <table class="data">
+    <thead><tr><th>File</th><th>Vai trò</th></tr></thead>
+    <tbody>
+      <tr><td><code>register.dto.ts</code> / <code>login.dto.ts</code></td><td><code>@IsEmail</code> + password <code>MinLength(8)</code></td></tr>
+      <tr><td><code>auth.service.ts</code></td><td>hash/compare bcrypt; <code>jwt.sign({ sub, email })</code></td></tr>
+      <tr><td><code>jwt.strategy.ts</code></td><td><code>ExtractJwt.fromAuthHeaderAsBearerToken()</code>; <code>validate</code> → <code>request.user</code></td></tr>
+      <tr><td><code>jwt-auth.guard.ts</code></td><td><code>AuthGuard('jwt')</code> — export cho Cart sau</td></tr>
+      <tr><td><code>auth.controller.ts</code></td><td><code>POST register|login</code>, <code>GET me</code> + <code>@UseGuards(JwtAuthGuard)</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="code-block">
+    <span class="code-label">JwtModule.registerAsync — ý chính</span>
+<pre><code>JwtModule.registerAsync({
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    secret: config.getOrThrow&lt;string&gt;(<span class="str">'JWT_SECRET'</span>),
+    signOptions: {
+      expiresIn: config.get&lt;number&gt;(<span class="str">'JWT_EXPIRES_IN'</span>, <span class="num">86400</span>),
+    },
+  }),
+}),</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">auth.service — login (ý chính)</span>
+<pre><code><span class="kw">const</span> user = <span class="kw">await</span> <span class="kw">this</span>.usersService.findByEmail(dto.email);
+<span class="kw">if</span> (!user) <span class="kw">throw new</span> <span class="fn">UnauthorizedException</span>(<span class="str">'Invalid credentials'</span>);
+<span class="kw">const</span> ok = <span class="kw">await</span> bcrypt.compare(dto.password, user.passwordHash);
+<span class="kw">if</span> (!ok) <span class="kw">throw new</span> <span class="fn">UnauthorizedException</span>(<span class="str">'Invalid credentials'</span>);
+<span class="cmt">// Không nói “email không tồn tại” vs “sai pass” — giảm user enumeration</span>
+<span class="kw">return</span> { accessToken: <span class="kw">this</span>.jwtService.sign({ sub: String(user._id), email: user.email }) };</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">GET /auth/me</span>
+<pre><code>@<span class="fn">UseGuards</span>(JwtAuthGuard)
+@<span class="fn">Get</span>(<span class="str">'me'</span>)
+<span class="fn">me</span>(@<span class="fn">Req</span>() req: { user: { userId: string; email: string } }) {
+  <span class="kw">return</span> req.user;
+}</code></pre>
+  </div>
+  <p>Import <code>AuthModule</code> vào <code>AppModule</code>. Export <code>JwtAuthGuard</code> (+ Passport/Jwt nếu cần) từ AuthModule.</p>
+
+  <h2>5. Unit test tối thiểu</h2>
+  <p>Mock <code>UsersService</code> + <code>JwtService</code>: (1) register trùng email → <code>ConflictException</code>, (2) login sai password → <code>UnauthorizedException</code>. Cập nhật env schema tests cho <code>JWT_SECRET</code>.</p>
+
+  <h2>6. Sanity (nộp)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code><span class="cmt"># Mongo phải up</span>
+cd shopstream && docker compose up -d
+cd api
+npm test && npm run build
+npm run start:dev
+
+curl -s -X POST http://localhost:3000/auth/register \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"email":"buyer@shop.test","password":"password1"}'</span>
+
+curl -s -w <span class="str">'\n%{http_code}\n'</span> http://localhost:3000/auth/me
+<span class="cmt"># 401</span>
+
+TOKEN=... <span class="cmt"># lấy từ register/login</span>
+curl -s http://localhost:3000/auth/me -H <span class="str">"Authorization: Bearer $TOKEN"</span>
+<span class="cmt"># 200 + userId/email</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> JWT vs session cookie?<br>
+    <strong>A gọn:</strong> JWT stateless, dễ scale API; khó revoke sớm (cần denylist/TTL ngắn). Session lưu server, revoke dễ, cần sticky/store. Product API hay JWT (+ refresh sau này).</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. <code>validate()</code> trong JwtStrategy trả về gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — Nest gán vào request.user.">A. Object gắn vào <code>request.user</code></button>
+    <button class="opt" data-correct="false" data-explain="Sai — sign thuộc AuthService/JwtService.">B. Tự ký JWT mới</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Hash password</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Vì sao login nên cùng message “Invalid credentials” khi email sai hoặc password sai?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — giảm enumeration (đoán email đã đăng ký).">A. Giảm lộ email nào đã tồn tại</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Vì bcrypt bắt buộc</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Vì JWT không hỗ trợ email</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li><code>JWT_SECRET</code> trong Joi required; thiếu → app không start</li>
+      <li>register/login trả <code>accessToken</code></li>
+      <li><code>/auth/me</code> không token → 401; có Bearer → 200</li>
+      <li>Password lưu hash (không plaintext trong Mongo)</li>
+      <li><code>JwtAuthGuard</code> export sẵn cho Cart</li>
+      <li><code>npm test</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>7. Câu hỏi tư duy</h2>
+  <p>Cart sắp cần <code>userId</code> từ JWT. Bạn gắn guard ở controller Cart hay global <code>APP_GUARD</code> + decorator <code>@Public()</code> cho catalog? Trade-off?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 08 · Mini-recall module 1</div>
+    <p class="nd">Quiz trộn config / module / validation / Mongo / auth — củng cố trước Cart.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0006-soft-delete-pagination.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Tự code xong → paste register + <code>/me</code> 401/200 + <code>npm test</code>. Nhắc: <code>docker compose up -d</code> trước khi start Nest.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

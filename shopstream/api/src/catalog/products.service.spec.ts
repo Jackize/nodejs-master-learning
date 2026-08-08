@@ -10,6 +10,7 @@ describe('ProductsService', () => {
     findById: jest.fn(),
     countDocuments: jest.fn(),
     findOne: jest.fn(),
+    findOneAndUpdate: jest.fn(),
   };
   const mockQuery = (result: any) => ({
     sort: jest.fn().mockReturnThis(),
@@ -60,5 +61,39 @@ describe('ProductsService', () => {
     expect(created?.name).toBe('Áo thun');
     expect((await service.findAll({ page: 1, limit: 10 })).data.length).toBe(1);
     expect(await service.findById(created?.id)).toEqual(created);
+  });
+
+  it('soft delete rồi findAll không trả về sản phẩm đã xóa', async () => {
+    const id = new mongoose.Types.ObjectId().toString();
+    const product = {
+      _id: id,
+      name: 'Áo thun',
+      price: 199000,
+      stock: 10,
+      deletedAt: null,
+    };
+    mockProductModel.findOneAndUpdate.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({ ...product, deletedAt: new Date() }),
+    });
+    mockProductModel.find.mockReturnValue(mockQuery([]));
+    mockProductModel.countDocuments.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(0),
+    });
+    await service.softDelete(id);
+    expect(mockProductModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: id, deletedAt: null },
+      { deletedAt: expect.any(Date) },
+      { new: true },
+    );
+    expect(await service.findAll({ page: 1, limit: 10 })).toEqual({
+      data: [],
+      meta: {
+        page: 1,
+        limit: 10,
+        total: 0,
+        totalPages: 0,
+      },
+    });
+    expect(mockProductModel.find).toHaveBeenCalledWith({ deletedAt: null });
   });
 });
