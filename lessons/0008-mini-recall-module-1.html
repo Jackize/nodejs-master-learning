@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 08 · Mini-recall Module 1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 1 · Bài 08</span>
+  <h1>Mini-recall Module 1</h1>
+  <p class="subtitle">Win: làm hết quiz (feedback ngay) + trả lời 2 câu tư duy trong chat — không code mới. Củng cố trước khi sang Cart.</p>
+  <p class="meta-line">⏱ ~25–40 phút · 🎯 Spaced recall: config · module · validation · Mongo · soft-delete · JWT.</p>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Vì sao có bài này?</div>
+    <p>Module 1 đã xong Catalog + Auth. Trước Cart/Order, cần nhớ <em>vì sao</em> từng quyết định — phỏng vấn hay hỏi đúng các điểm này. Cheat-sheet: <a href="../reference/nestjs-module1-catalog-auth.html">Module 1 — Catalog &amp; Auth</a>.</p>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Cách nộp</div>
+    <p>Làm quiz trên trang (chọn đến khi xanh). Trong chat gửi: (1) “quiz xong” (2) trả lời ngắn <strong>2 câu tư duy</strong> cuối bài. Mình chấm tư duy thật lòng — không nịnh.</p>
+  </div>
+
+  <h2>A. Config &amp; module</h2>
+  <div class="quiz">
+    <div class="q">1. Thiếu <code>MONGODB_URI</code> / <code>JWT_SECRET</code> lúc start — hành vi đúng?</div>
+    <button class="opt" data-correct="false" data-explain="Sai — fail-fast lúc bootstrap, không đợi request.">A. App vẫn start, lỗi khi request đầu</button>
+    <button class="opt" data-correct="true" data-explain="Đúng — Joi validationSchema ném Config validation error.">B. Bootstrap fail ngay (Config validation error)</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Nest tự tạo giá trị mặc định an toàn cho production</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">2. CartModule muốn dùng <code>ProductsService</code> đúng cách?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — import module đã export → cùng singleton.">A. <code>imports: [CatalogModule]</code> (Catalog đã <code>exports: [ProductsService]</code>)</button>
+    <button class="opt" data-correct="false" data-explain="Sai — tạo instance thứ hai.">B. Khai báo lại ProductsService trong providers của Cart</button>
+    <button class="opt" data-correct="false" data-explain="Sai — mất boundary.">C. @Global() mọi module</button>
+    <div class="feedback"></div>
+  </div>
+
+  <h2>B. Validation &amp; API shape</h2>
+  <div class="quiz">
+    <div class="q">3. <code>forbidNonWhitelisted: true</code> khi client gửi field thừa?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — 400 thay vì im lặng bỏ.">A. HTTP 400</button>
+    <button class="opt" data-correct="false" data-explain="Đó là whitelist không kèm forbid.">B. 201, field bị strip im lặng</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. 500</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">4. List products trả gì sau Bài 06?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — data + meta phân trang.">A. <code>{ data, meta: { page, limit, total, totalPages } }</code></button>
+    <button class="opt" data-correct="false" data-explain="Cũ — trước pagination.">B. Mảng product thuần</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Chỉ <code>total</code></button>
+    <div class="feedback"></div>
+  </div>
+
+  <h2>C. Mongo &amp; soft-delete</h2>
+  <div class="quiz">
+    <div class="q">5. Soft-delete product — document trong Mongo?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — còn doc, deletedAt khác null; list lọc deletedAt: null.">A. Vẫn còn, có <code>deletedAt</code>; list active không hiện</button>
+    <button class="opt" data-correct="false" data-explain="Đó là hard-delete.">B. Bị <code>remove()</code> khỏi collection</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Chuyển sang collection khác tự động</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">6. Index <code>{ deletedAt: 1, createdAt: -1 }</code> phục vụ?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — filter active + sort mới nhất.">A. List active sort theo thời gian tạo</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Unique email user</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. TTL tự xoá sau 30 ngày (không cấu hình thêm)</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">7. Unit test ProductsService với Mongo — cách đúng baseline?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — mock getModelToken / Model.">A. Mock Model / <code>getModelToken</code></button>
+    <button class="opt" data-correct="false" data-explain="Chậm — để e2e.">B. Luôn nối Mongo thật trong mọi unit</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Không cần test service</button>
+    <div class="feedback"></div>
+  </div>
+
+  <h2>D. Auth JWT</h2>
+  <div class="quiz">
+    <div class="q">8. <code>JwtStrategy.validate()</code> return value đi đâu?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — gắn request.user.">A. <code>request.user</code></button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Cookie tự set</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Response body bắt buộc</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">9. Login email không tồn tại vs sai password — message nên?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — giảm enumeration.">A. Cùng “Invalid credentials”</button>
+    <button class="opt" data-correct="false" data-explain="Lộ email đã đăng ký.">B. “Email not found” vs “Wrong password”</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. 500 cho cả hai</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">10. Password trong Mongo phải là?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — bcrypt hash.">A. Hash (<code>passwordHash</code>), không plaintext</button>
+    <button class="opt" data-correct="false" data-explain="Cấm.">B. Plaintext để debug dễ</button>
+    <button class="opt" data-correct="false" data-explain="Sai — JWT không thay hash password.">C. Chỉ lưu trong JWT, không lưu DB</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn (nhanh)</div>
+    <p><strong>Q:</strong> At-least-once delivery liên quan gì tới order/payment sau này?<br>
+    <strong>A teaser:</strong> Consumer có thể nhận trùng → cần idempotency (Module 2–3). Module 1 chưa Kafka — nhưng đã quen “đừng tin request chỉ chạy một lần” qua idempotency HTTP sẽ tới.</p>
+  </div>
+
+  <h2>E. Câu hỏi tư duy (trả lời trong chat)</h2>
+  <p><strong>T1.</strong> Cart sắp add product đã <code>soft-delete</code>. Chặn ở Catalog (<code>findById</code> NotFound) hay Cart tự check <code>deletedAt</code>? Chọn một + 1 câu vì sao.</p>
+  <p><strong>T2.</strong> Bảo vệ route: (a) <code>@UseGuards(JwtAuthGuard)</code> từng controller Cart/Order, hay (b) global <code>APP_GUARD</code> + <code>@Public()</code> cho catalog/health? Trade-off chính với ShopStream hiện tại?</p>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>Đã làm 10 câu quiz (feedback xanh)</li>
+      <li>Đã gửi T1 + T2 trong chat</li>
+      <li>(Tuỳ chọn) lướt cheat-sheet Module 1</li>
+    </ul>
+  </div>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 09 · Cart model &amp; add/remove</div>
+    <p class="nd">Module 2 bắt đầu — Cart gắn user JWT + ProductsService.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0007-auth-jwt.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Gửi T1 + T2 khi xong quiz. Trả lời nông / sai — mình nói thẳng rồi mới sang Cart.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

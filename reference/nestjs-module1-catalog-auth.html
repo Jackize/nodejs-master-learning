@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cheat-sheet · Module 1 Catalog &amp; Auth</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../lessons/lesson.css">
+</head>
+<body>
+<div class="wrap">
+  <span class="lesson-tag">Reference · Module 1</span>
+  <h1>Catalog &amp; Auth — ôn nhanh</h1>
+  <p class="subtitle">Bài 03–07: feature module, ValidationPipe, Mongo+index, soft-delete, JWT.</p>
+
+  <h2>Catalog API</h2>
+  <table class="data">
+    <thead><tr><th>Method</th><th>Path</th><th>Ghi chú</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/catalog/products?page&amp;limit</code></td><td><code>{ data, meta }</code>; lọc <code>deletedAt: null</code></td></tr>
+      <tr><td>POST</td><td><code>/catalog/products</code></td><td>DTO + ValidationPipe</td></tr>
+      <tr><td>DELETE</td><td><code>/catalog/products/:id</code></td><td>Soft-delete → set <code>deletedAt</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Indexes Product</h2>
+  <ul>
+    <li><code>{ name: 1 }</code></li>
+    <li><code>{ stock: 1, price: 1 }</code></li>
+    <li><code>{ deletedAt: 1, createdAt: -1 }</code> — list active</li>
+  </ul>
+
+  <h2>ValidationPipe</h2>
+  <div class="code-block">
+    <span class="code-label">main.ts</span>
+<pre><code>whitelist: <span class="kw">true</span>
+forbidNonWhitelisted: <span class="kw">true</span>
+transform: <span class="kw">true</span></code></pre>
+  </div>
+
+  <h2>Auth</h2>
+  <ul>
+    <li><code>POST /auth/register|login</code> → <code>accessToken</code></li>
+    <li><code>GET /auth/me</code> + <code>Authorization: Bearer …</code></li>
+    <li>Payload: <code>{ sub, email }</code> → <code>request.user = { userId, email }</code></li>
+    <li>Env: <code>JWT_SECRET</code> required, <code>JWT_EXPIRES_IN</code> giây (number)</li>
+    <li>Export <code>JwtAuthGuard</code> cho Cart</li>
+  </ul>
+
+  <h2>Module boundary</h2>
+  <p>AppModule compose · Catalog/Users/Auth feature modules · <code>exports</code> = public API · không đăng ký lại provider ở module khác.</p>
+
+  <h2>Test</h2>
+  <ul>
+    <li>Mock Model / <code>getModelToken</code></li>
+    <li>Mock UsersService + JwtService cho AuthService</li>
+    <li>Env schema: thiếu URI/SECRET → fail</li>
+  </ul>
+
+  <p class="try-it"><a href="../lessons/index.html">← Mục lục</a> · <a href="nestjs-foundation-00-04.html">Foundation 00–04</a></p>
+</div>
+<script src="../lessons/lesson-enhance.js"></script>
+</body>
+</html>
