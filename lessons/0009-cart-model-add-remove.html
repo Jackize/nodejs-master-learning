@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 09 · Cart model &amp; add/remove</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 2 · Bài 09</span>
+  <h1>Cart model &amp; add/remove</h1>
+  <p class="subtitle">Win: 1 cart / user (JWT); <code>GET /cart</code>, <code>POST /cart/items</code>, <code>DELETE /cart/items/:productId</code>; soft-deleted product → 404 qua Catalog.</p>
+  <p class="meta-line">⏱ ~75–100 phút · 🎯 Tự code — verify: guard 401, snapshot giá, ObjectId query, <code>npm test</code> xanh.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill vào <code>shopstream/</code>. Dùng lại <code>JwtAuthGuard</code> (export từ Auth) + <code>ProductsService</code> (export từ Catalog). Nhắc T1 Bài 08: Cart <em>không</em> tự đọc <code>deletedAt</code>.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Module 1 = catalog + identity. Module 2 = “ai đang giữ gì trong giỏ” trước checkout. Cart gắn <code>userId</code> từ JWT; item lấy truth từ Catalog rồi <strong>snapshot</strong> name/price — giá catalog đổi sau vẫn giữ giá lúc add (checkout Bài 10 sẽ cần).</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao 1 document cart / user?</div>
+    <p>MVP: đọc/ghi đơn giản, unique index <code>userId</code>. Sau có thể tách “cart line” collection nếu cần query nặng — giờ chưa cần. Race hai request cùng tạo cart → E11000: xử lý bằng query đúng ObjectId + (tuỳ chọn) catch duplicate → find lại.</p>
+  </div>
+
+  <h2>0. Chuẩn bị trước khi code</h2>
+  <ul>
+    <li><code>docker compose up -d</code> (Mongo).</li>
+    <li><code>JWT_EXPIRES_IN</code> là <strong>number giây</strong> trong <code>.env</code> (vd <code>86400</code>) — đừng để string kiểu <code>1d</code> nếu Joi của bạn là number.</li>
+    <li>Sửa signature <code>ProductsService.findById</code>: nếu luôn throw khi thiếu/soft-delete → return type nên là <code>Promise&lt;ProductResponse&gt;</code> (bỏ <code>| undefined</code>) để Cart không phải null-check thừa.</li>
+  </ul>
+
+  <h2>1. Scaffold</h2>
+  <div class="code-block">
+    <span class="code-label">bash — shopstream/api</span>
+<pre><code>mkdir -p src/cart/schemas src/cart/dto</code></pre>
+  </div>
+  <table class="data">
+    <thead><tr><th>File</th><th>Vai trò</th></tr></thead>
+    <tbody>
+      <tr><td><code>schemas/cart.schema.ts</code></td><td>Cart + embedded CartItem; unique <code>userId</code></td></tr>
+      <tr><td><code>dto/add-cart-item.dto.ts</code></td><td><code>@IsMongoId</code> productId; quantity <code>@IsInt @Min(1)</code></td></tr>
+      <tr><td><code>cart.service.ts</code></td><td>getOrCreate / add / remove; gọi Catalog</td></tr>
+      <tr><td><code>cart.controller.ts</code></td><td><code>@UseGuards(JwtAuthGuard)</code> cả controller</td></tr>
+      <tr><td><code>cart.module.ts</code></td><td>imports Catalog + Auth + Mongoose feature</td></tr>
+    </tbody>
+  </table>
+
+  <h2>2. Schema — snapshot trên item</h2>
+  <div class="code-block">
+    <span class="code-label">cart.schema.ts — ý chính</span>
+<pre><code>@<span class="fn">Schema</span>({ _id: <span class="kw">false</span> })
+<span class="kw">export class</span> <span class="fn">CartItem</span> {
+  @<span class="fn">Prop</span>({ type: Types.ObjectId, ref: <span class="str">'Product'</span>, required: <span class="kw">true</span> })
+  productId!: Types.ObjectId;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, min: <span class="num">1</span> })
+  quantity!: number;
+
+  <span class="cmt">// Snapshot lúc add — không join lại Product mỗi lần GET</span>
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span> })
+  name!: string;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, min: <span class="num">0</span> })
+  unitPrice!: number;
+}
+
+@<span class="fn">Schema</span>({ timestamps: <span class="kw">true</span>, collection: <span class="str">'carts'</span> })
+<span class="kw">export class</span> <span class="fn">Cart</span> {
+  @<span class="fn">Prop</span>({ type: Types.ObjectId, ref: <span class="str">'User'</span>, required: <span class="kw">true</span>, unique: <span class="kw">true</span> })
+  userId!: Types.ObjectId;
+
+  @<span class="fn">Prop</span>({ type: [CartItemSchema], default: [] })
+  items!: CartItem[];
+}</code></pre>
+  </div>
+
+  <h2>3. CartModule — import đúng domain</h2>
+  <div class="code-block">
+    <span class="code-label">cart.module.ts</span>
+<pre><code>@<span class="fn">Module</span>({
+  imports: [
+    MongooseModule.forFeature([{ name: Cart.name, schema: CartSchema }]),
+    CatalogModule, <span class="cmt">// ProductsService</span>
+    AuthModule,     <span class="cmt">// JwtAuthGuard</span>
+  ],
+  controllers: [CartController],
+  providers: [CartService],
+  exports: [CartService], <span class="cmt">// checkout sau sẽ cần</span>
+})
+<span class="kw">export class</span> <span class="fn">CartModule</span> {}</code></pre>
+  </div>
+  <p>Đăng ký <code>CartModule</code> trong <code>AppModule</code>.</p>
+
+  <h2>4. Service — Catalog gate + ObjectId trap</h2>
+  <div class="callout tip">
+    <div class="ct">⚠️ Bug hay gặp (đã verify)</div>
+    <p><code>findOne({ userId: string })</code> có thể <strong>không match</strong> document lưu <code>ObjectId</code> → service tưởng chưa có cart → <code>create</code> → <code>E11000 duplicate key</code> trên <code>userId_1</code> → HTTP 500. Luôn query/create bằng <code>new Types.ObjectId(userId)</code>.</p>
+  </div>
+  <div class="code-block">
+    <span class="code-label">cart.service — ý chính</span>
+<pre><code><span class="kw">private async</span> <span class="fn">getOrCreate</span>(userId: string): Promise&lt;CartDocument&gt; {
+  <span class="kw">const</span> uid = <span class="kw">new</span> Types.ObjectId(userId);
+  <span class="kw">let</span> cart = <span class="kw">await this</span>.cartModel.findOne({ userId: uid }).exec();
+  <span class="kw">if</span> (!cart) {
+    cart = <span class="kw">await this</span>.cartModel.create({ userId: uid, items: [] });
+  }
+  <span class="kw">return</span> cart;
+}
+
+<span class="kw">async</span> <span class="fn">addItem</span>(userId: string, dto: AddCartItemDto) {
+  <span class="cmt">// T1: Catalog quyết định “còn bán” — throw NotFound nếu soft-deleted</span>
+  <span class="kw">const</span> product = <span class="kw">await this</span>.productsService.findById(dto.productId);
+  <span class="kw">const</span> cart = <span class="kw">await this</span>.getOrCreate(userId);
+  <span class="kw">const</span> existing = cart.items.find((i) => String(i.productId) === dto.productId);
+  <span class="kw">if</span> (existing) {
+    existing.quantity += dto.quantity;
+  } <span class="kw">else</span> {
+    cart.items.push({
+      productId: <span class="kw">new</span> Types.ObjectId(dto.productId),
+      quantity: dto.quantity,
+      name: product.name,
+      unitPrice: product.price,
+    });
+  }
+  <span class="kw">await</span> cart.save();
+  <span class="kw">return this</span>.toResponse(cart);
+}</code></pre>
+  </div>
+  <p><code>removeItem</code>: filter bỏ theo <code>productId</code>; nếu không đổi length → <code>NotFoundException('Item not in cart')</code>. Response map ObjectId → string (<code>id</code>, <code>userId</code>, <code>productId</code>).</p>
+
+  <h2>5. Controller — JWT trên cả /cart</h2>
+  <div class="code-block">
+    <span class="code-label">cart.controller.ts</span>
+<pre><code>@<span class="fn">Controller</span>(<span class="str">'cart'</span>)
+@<span class="fn">UseGuards</span>(JwtAuthGuard)
+<span class="kw">export class</span> <span class="fn">CartController</span> {
+  @<span class="fn">Get</span>()
+  <span class="fn">get</span>(@<span class="fn">Req</span>() req: { user: { userId: string } }) {
+    <span class="kw">return this</span>.cartService.getCart(req.user.userId);
+  }
+
+  @<span class="fn">Post</span>(<span class="str">'items'</span>)
+  <span class="fn">add</span>(@<span class="fn">Req</span>() req: { user: { userId: string } }, @<span class="fn">Body</span>() dto: AddCartItemDto) {
+    <span class="kw">return this</span>.cartService.addItem(req.user.userId, dto);
+  }
+
+  @<span class="fn">Delete</span>(<span class="str">'items/:productId'</span>)
+  <span class="fn">remove</span>(@<span class="fn">Req</span>() req: { user: { userId: string } }, @<span class="fn">Param</span>(<span class="str">'productId'</span>) productId: string) {
+    <span class="kw">return this</span>.cartService.removeItem(req.user.userId, productId);
+  }
+}</code></pre>
+  </div>
+  <p>Bài 08 T2: per-controller OK cho app nhỏ; nhớ: global + <code>@Public()</code> là default-deny — ít quên hơn khi thêm route mới.</p>
+
+  <h2>6. Unit test tối thiểu</h2>
+  <div class="code-block">
+    <span class="code-label">cart.service.spec.ts — ít nhất 1 case</span>
+<pre><code>it(<span class="str">'addItem gọi ProductsService.findById (Catalog gate)'</span>, <span class="kw">async</span> () => {
+  productsService.findById.mockRejectedValue(<span class="kw">new</span> NotFoundException(<span class="str">'Product not found'</span>));
+  <span class="kw">await</span> expect(service.addItem(userId, dto)).rejects.toBeInstanceOf(NotFoundException);
+  expect(productsService.findById).toHaveBeenCalled();
+});</code></pre>
+  </div>
+
+  <h2>7. Sanity (nộp)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>cd shopstream && docker compose up -d
+cd api && npm test && npm run build && npm run start:dev
+
+<span class="cmt"># 1) register → TOKEN</span>
+curl -s -X POST http://localhost:3000/auth/register \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"email":"cart@shop.test","password":"password1"}'</span>
+
+<span class="cmt"># 2) không token → 401</span>
+curl -s -w <span class="str">'\n%{http_code}\n'</span> http://localhost:3000/cart
+
+<span class="cmt"># 3) tạo product → PID; add item</span>
+curl -s -X POST http://localhost:3000/cart/items \
+  -H <span class="str">"Authorization: Bearer $TOKEN"</span> \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"productId":"'$PID'","quantity":2}'</span>
+
+<span class="cmt"># 4) GET /cart → thấy item + name/unitPrice snapshot</span>
+<span class="cmt"># 5) DELETE /cart/items/$PID → items []</span>
+<span class="cmt"># 6) soft-delete product rồi POST add lại → 404</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Giỏ lưu giá hiện tại hay snapshot?<br>
+    <strong>A gọn:</strong> Snapshot lúc add (hoặc lúc checkout) — tránh user bất ngờ khi catalog đổi giá giữa session. Trade-off: giá cũ có thể lệch policy marketing; nhiều shop reprice ở checkout và báo user.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Add product soft-deleted — ai nên throw NotFound?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — Catalog sở hữu lifecycle; Cart gọi findById.">A. <code>ProductsService.findById</code> (Cart chỉ gọi)</button>
+    <button class="opt" data-correct="false" data-explain="Sai — trùng domain / dễ lệch rule.">B. Cart tự đọc <code>deletedAt</code> trên Product collection</button>
+    <button class="opt" data-correct="false" data-explain="Sai — quá muộn cho UX add-to-cart.">C. Chỉ fail lúc payment webhook</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Vì sao snapshot <code>unitPrice</code> trên CartItem?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — giữ giá lúc user add; catalog có thể đổi sau.">A. Giữ giá lúc add; catalog có thể đổi sau</button>
+    <button class="opt" data-correct="false" data-explain="Sai — Mongo không bắt buộc.">B. Vì Mongo bắt buộc embed mọi field Product</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Để JWT chứa giá</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. <code>findOne({ userId: req.user.userId })</code> với string hay gặp gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — đã gặp E11000 khi create lần 2 vì find miss.">A. Không match ObjectId → tạo trùng → E11000 / 500</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Tự convert JWT thành cookie</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Luôn nhanh hơn ObjectId</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li><code>CartModule</code> imports <code>CatalogModule</code> + <code>AuthModule</code></li>
+      <li>Mọi route <code>/cart</code> cần Bearer; không token → 401</li>
+      <li>Add gọi <code>productsService.findById</code>; soft-deleted → 404</li>
+      <li>Item có snapshot <code>name</code> + <code>unitPrice</code></li>
+      <li>Query cart bằng <code>Types.ObjectId(userId)</code></li>
+      <li>Add cùng product → cộng quantity</li>
+      <li><code>npm test</code> + build xanh</li>
+    </ul>
+  </div>
+
+  <h2>8. Câu hỏi tư duy</h2>
+  <p>Hai tab cùng lúc <code>POST /cart/items</code> lần đầu (chưa có cart): cả hai pass <code>findOne</code> rồi cùng <code>create</code>. Ngoài ObjectId đúng, bạn xử lý race thế nào (catch E11000? upsert? transaction)? 1–2 câu.</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 10 · Checkout &amp; inventory hold (sắp tới)</div>
+    <p class="nd">Từ cart → order draft; trừ/hold stock — chưa Kafka.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0008-mini-recall-module-1.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Tự code xong → paste: register→token, <code>/cart</code> 401, add → get → remove, soft-deleted 404, <code>npm test</code>. Đừng gửi cả folder <code>src/cart</code> nếu chưa cần — output curl + test đủ để chấm.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
