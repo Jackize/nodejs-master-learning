@@ -8,4 +8,6 @@ export const envValidationSchema = Joi.object({
   PORT: Joi.number().port().default(3000),
   // Bắt buộc: không soft-default URI production nhầm sang localhost
   MONGODB_URI: Joi.string().min(1).required(),
+  JWT_SECRET: Joi.string().min(16).required(),
+  JWT_EXPIRES_IN: Joi.number().integer().positive().default(86400),
 });

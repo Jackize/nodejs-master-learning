@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { envValidationSchema } from './config/env.validation';
 import { HealthModule } from './health/health.module';
@@ -22,6 +23,7 @@ import { HealthModule } from './health/health.module';
     }),
     HealthModule,
     CatalogModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

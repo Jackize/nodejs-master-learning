@@ -23,3 +23,6 @@
 | **getModelToken** | Token DI của Mongoose model — mock trong unit test thay vì nối DB. |
 | **Soft delete** | Đánh dấu xoá (`deletedAt`) thay vì remove document; query active phải lọc. |
 | **Offset pagination** | `skip`/`limit` + `total`; đơn giản nhưng deep page kém hiệu năng. |
+| **JWT** | Token ký (thường Bearer) mang claim identity (`sub`, `email`); verify bằng secret/public key. |
+| **JwtAuthGuard** | Guard Nest/Passport bảo vệ route — thiếu/invalid token → 401. |
+| **passwordHash (bcrypt)** | Hash một chiều của password; không lưu plaintext. |
