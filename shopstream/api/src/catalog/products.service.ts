@@ -51,7 +51,7 @@ export class ProductsService {
     return this.toResponse(doc);
   }
 
-  async findById(id: string): Promise<ProductResponse | undefined> {
+  async findById(id: string): Promise<ProductResponse> {
     const doc = await this.productModel
       .findOne({ _id: id, deletedAt: null })
       .exec();
