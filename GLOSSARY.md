@@ -26,3 +26,8 @@
 | **JWT** | Token ký (thường Bearer) mang claim identity (`sub`, `email`); verify bằng secret/public key. |
 | **JwtAuthGuard** | Guard Nest/Passport bảo vệ route — thiếu/invalid token → 401. |
 | **passwordHash (bcrypt)** | Hash một chiều của password; không lưu plaintext. |
+| **Cart snapshot** | Lưu `name`/`unitPrice` trên dòng giỏ lúc add — không phụ thuộc giá catalog đổi sau. |
+| **Inventory hold** | Khóa/trừ stock khi checkout (trước paid) để tránh oversell; cần release nếu hủy/timeout. |
+| **Replica set (Mongo)** | Cụm Mongo (có thể 1 node) — điều kiện để multi-document transaction chạy. |
+| **withTransaction** | Helper session Mongoose: commit/abort (+ retry transient) quanh callback. |
+| **pending_payment** | Trạng thái Order sau checkout: hàng đã hold, chờ thanh toán. |

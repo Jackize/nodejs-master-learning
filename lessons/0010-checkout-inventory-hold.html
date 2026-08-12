@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 10 · Checkout &amp; inventory hold</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 2 · Bài 10</span>
+  <h1>Checkout &amp; inventory hold</h1>
+  <p class="subtitle">Win: <code>POST /orders/checkout</code> (JWT) tạo Order <code>pending_payment</code> từ Cart, trừ stock atomic, xóa giỏ — thiếu hàng → 409 và <strong>rollback</strong> transaction.</p>
+  <p class="meta-line">⏱ ~90–120 phút · 🎯 Tự code — verify: Mongo replica set + session transaction (Nest + Mongoose docs).</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill vào <code>shopstream/</code>. Bạn mở rộng Cart/Catalog + thêm <code>OrdersModule</code>. Bài 09 snapshot giá trên Cart → Order giữ nguyên snapshot đó.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Cart = ý định mua. Checkout = chốt: tạo Order + <strong>hold</strong> hàng (trừ <code>stock</code>) trước khi thanh toán. Không atomic → hai buyer cùng mua hết kho → oversell. Mongo multi-document transaction cần <strong>replica set</strong> — xem <a href="https://mongoosejs.com/docs/transactions.html" target="_blank">Mongoose Transactions</a> và <a href="https://docs.nestjs.com/techniques/mongodb#sessions" target="_blank">Nest MongoDB Sessions</a>.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao hold ngay lúc checkout?</div>
+    <p>Chỉ tạo Order rồi trừ stock lúc “paid” thì cửa sổ giữa hai bước bị oversell. Hold sớm = kho đã khóa cho order <code>pending_payment</code>. Trade-off: user bỏ thanh toán → phải <em>release</em> stock (Bài sau / job TTL). MVP: hold = <code>$inc: { stock: -qty }</code> kèm điều kiện <code>stock &gt;= qty</code>.</p>
+  </div>
+
+  <h2>0. Mongo phải là replica set (bắt buộc)</h2>
+  <p>Transaction trên standalone Mongo sẽ lỗi. Cập nhật <code>shopstream/docker-compose.yml</code> service <code>mongo</code>:</p>
+  <div class="code-block">
+    <span class="code-label">docker-compose.yml — mongo</span>
+<pre><code>mongo:
+  image: mongo:<span class="num">7.0</span>
+  command: [<span class="str">"--replSet"</span>, <span class="str">"rs0"</span>, <span class="str">"--bind_ip_all"</span>]
+  ports:
+    - <span class="str">"27017:27017"</span>
+  volumes:
+    - mongo_data:/data/db
+  healthcheck:
+    <span class="cmt"># initiate 1 lần; lần sau rs.status() ok</span>
+    test: [<span class="str">"CMD"</span>, <span class="str">"mongosh"</span>, <span class="str">"--quiet"</span>, <span class="str">"--eval"</span>, <span class="str">"try { rs.status().ok } catch(e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'127.0.0.1:27017'}]}) }"</span>]
+    interval: <span class="num">5</span>s
+    timeout: <span class="num">10</span>s
+    retries: <span class="num">12</span>
+    start_period: <span class="num">15</span>s</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">bash — recreate + URI</span>
+<pre><code>cd shopstream
+docker compose up -d --force-recreate mongo
+<span class="cmt"># Nếu volume cũ là standalone và initiate lỗi: docker compose down -v  rồi up lại (XOÁ data local)</span>
+
+<span class="cmt"># .env — single-node RS từ máy host</span>
+MONGODB_URI=mongodb://127.0.0.1:27017/shopstream?replicaSet=rs0&amp;directConnection=true</code></pre>
+  </div>
+  <p>Đã verify: <code>mongo:7.0</code> + <code>rs0</code> + Nest 11 + mongoose 9 → checkout HTTP xanh.</p>
+
+  <h2>1. Catalog — <code>holdStock</code></h2>
+  <div class="code-block">
+    <span class="code-label">products.service.ts — thêm</span>
+<pre><code><span class="kw">async</span> <span class="fn">holdStock</span>(
+  productId: string,
+  quantity: number,
+  session?: ClientSession,
+): Promise&lt;void&gt; {
+  <span class="kw">const</span> updated = <span class="kw">await this</span>.productModel
+    .findOneAndUpdate(
+      {
+        _id: productId,
+        deletedAt: <span class="kw">null</span>,
+        stock: { $gte: quantity }, <span class="cmt">// đủ hàng mới trừ</span>
+      },
+      { $inc: { stock: -quantity } },
+      { new: <span class="kw">true</span>, session },
+    )
+    .exec();
+  <span class="kw">if</span> (!updated) {
+    <span class="kw">throw new</span> <span class="fn">ConflictException</span>(<span class="str">'Insufficient stock'</span>); <span class="cmt">// 409</span>
+  }
+}</code></pre>
+  </div>
+
+  <h2>2. Cart — đọc items + clear trong session</h2>
+  <p>Thêm (không phá API Bài 09):</p>
+  <ul>
+    <li><code>getItemsOrEmpty(userId, session?)</code> — <strong>không</strong> <code>create</code> cart mới nếu thiếu (checkout cart trống → 400).</li>
+    <li><code>clearItems(userId, session?)</code> — <code>updateOne … $set: { items: [] }</code>.</li>
+  </ul>
+  <p>Chỉ gọi <code>.session(session)</code> khi <code>session</code> có mặt — mock unit test Cart cũ không có chain <code>.session</code>.</p>
+
+  <h2>3. OrdersModule</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/orders/schemas src/orders/dto</code></pre>
+  </div>
+  <table class="data">
+    <thead><tr><th>File</th><th>Vai trò</th></tr></thead>
+    <tbody>
+      <tr><td><code>schemas/order.schema.ts</code></td><td>items snapshot + <code>total</code> + <code>status</code> (enum bắt đầu bằng <code>pending_payment</code>)</td></tr>
+      <tr><td><code>orders.service.ts</code></td><td><code>@InjectConnection</code> + <code>session.withTransaction</code></td></tr>
+      <tr><td><code>orders.controller.ts</code></td><td><code>POST /orders/checkout</code> + <code>JwtAuthGuard</code></td></tr>
+      <tr><td><code>orders.module.ts</code></td><td>imports Cart + Catalog + Auth</td></tr>
+    </tbody>
+  </table>
+
+  <div class="code-block">
+    <span class="code-label">order.schema — ý chính</span>
+<pre><code><span class="kw">export enum</span> <span class="fn">OrderStatus</span> {
+  PendingPayment = <span class="str">'pending_payment'</span>,
+}
+
+@<span class="fn">Schema</span>({ timestamps: <span class="kw">true</span>, collection: <span class="str">'orders'</span> })
+<span class="kw">export class</span> <span class="fn">Order</span> {
+  @<span class="fn">Prop</span>({ type: Types.ObjectId, ref: <span class="str">'User'</span>, required: <span class="kw">true</span>, index: <span class="kw">true</span> })
+  userId!: Types.ObjectId;
+
+  @<span class="fn">Prop</span>({ type: [OrderItemSchema], required: <span class="kw">true</span> })
+  items!: OrderItem[];
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, min: <span class="num">0</span> })
+  total!: number;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, enum: Object.values(OrderStatus), default: OrderStatus.PendingPayment })
+  status!: OrderStatus;
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">orders.service — checkout (ý chính)</span>
+<pre><code><span class="kw">async</span> <span class="fn">checkout</span>(userId: string): Promise&lt;OrderResponse&gt; {
+  <span class="kw">const</span> session = <span class="kw">await this</span>.connection.startSession();
+  <span class="kw">try</span> {
+    <span class="kw">let</span> orderDoc!: OrderDocument;
+    <span class="kw">await</span> session.withTransaction(<span class="kw">async</span> () => {
+      <span class="kw">const</span> items = <span class="kw">await this</span>.cartService.getItemsOrEmpty(userId, session);
+      <span class="kw">if</span> (items.length === <span class="num">0</span>) {
+        <span class="kw">throw new</span> <span class="fn">BadRequestException</span>(<span class="str">'Cart is empty'</span>);
+      }
+      <span class="kw">for</span> (<span class="kw">const</span> item <span class="kw">of</span> items) {
+        <span class="kw">await this</span>.productsService.holdStock(item.productId, item.quantity, session);
+      }
+      <span class="kw">const</span> total = items.reduce((a, i) => a + i.quantity * i.unitPrice, <span class="num">0</span>);
+      <span class="kw">const</span> created = <span class="kw">await this</span>.orderModel.create(
+        [{ userId: <span class="kw">new</span> Types.ObjectId(userId), items: /* map ObjectId */, total, status: OrderStatus.PendingPayment }],
+        { session },
+      );
+      orderDoc = created[<span class="num">0</span>];
+      <span class="kw">await this</span>.cartService.clearItems(userId, session);
+    });
+    <span class="kw">return this</span>.toResponse(orderDoc);
+  } <span class="kw">finally</span> {
+    <span class="kw">await</span> session.endSession();
+  }
+}</code></pre>
+  </div>
+  <p><code>Model.create([doc], { session })</code> — dạng mảng khi có session (Mongoose). Import <code>OrdersModule</code> vào <code>AppModule</code>.</p>
+
+  <h2>4. Unit test tối thiểu</h2>
+  <ul>
+    <li>Cart trống → <code>BadRequestException</code></li>
+    <li><code>holdStock</code> reject Conflict → không gọi <code>orderModel.create</code></li>
+  </ul>
+  <p>Mock <code>connection.startSession</code> trả object có <code>withTransaction(fn) =&gt; fn()</code> và <code>endSession</code>.</p>
+
+  <h2>5. Sanity (nộp)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>cd shopstream && docker compose up -d
+cd api && npm test && npm run build && npm run start:dev
+
+<span class="cmt"># 401 không token</span>
+curl -s -w <span class="str">'\n%{http_code}\n'</span> -X POST http://localhost:3000/orders/checkout
+
+<span class="cmt"># register → TOKEN; checkout giỏ trống → 400</span>
+
+<span class="cmt"># tạo product stock=2; add qty=2; checkout → 201 + status pending_payment</span>
+<span class="cmt"># GET /cart → items []</span>
+<span class="cmt"># list product → stock 0</span>
+
+<span class="cmt"># product stock=1; add qty=2; checkout → 409; stock vẫn 1 (rollback)</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Trừ stock bằng <code>read → if → write</code> có ổn không?<br>
+    <strong>A gọn:</strong> Không an toàn dưới concurrency. Dùng update điều kiện (<code>stock &gt;= qty</code> + <code>$inc</code>) hoặc transaction. Multi-doc (order + nhiều product + cart) → session/transaction trên replica set.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Vì sao ShopStream cần replica set ở bài này?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — multi-document transaction yêu cầu RS (kể cả 1 node).">A. Multi-document transaction cần replica set</button>
+    <button class="opt" data-correct="false" data-explain="Sai — JWT không liên quan RS.">B. Vì JWT bắt buộc replica set</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Vì Nest không chạy trên standalone</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. <code>findOneAndUpdate({ stock: { $gte: qty } }, { $inc: { stock: -qty } })</code> giúp gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — một lệnh atomic; không đủ hàng → không match → Conflict.">A. Trừ stock atomic; tránh oversell khi 2 request song song</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Tự gửi email xác nhận</button>
+    <button class="opt" data-correct="false" data-explain="Sai — soft delete khác.">C. Soft-delete product</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. Hold stock lúc checkout thất bại giữa chừng — transaction làm gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — withTransaction abort; stock/cart/order không lệch.">A. Abort → không commit order/stock/cart lệch</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Vẫn commit order, chỉ bỏ stock</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Xóa user</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>Mongo RS + URI có <code>replicaSet=rs0</code></li>
+      <li><code>holdStock</code> dùng điều kiện <code>stock &gt;= qty</code> → 409 nếu thiếu</li>
+      <li>Checkout trong <code>withTransaction</code>: hold → create order → clear cart</li>
+      <li>Cart trống → 400; không token → 401</li>
+      <li>Order status <code>pending_payment</code>; items snapshot từ cart</li>
+      <li><code>npm test</code> + build xanh</li>
+    </ul>
+  </div>
+
+  <h2>6. Câu hỏi tư duy</h2>
+  <p>User checkout xong rồi <strong>không thanh toán</strong>. Stock đã hold — bạn release bằng TTL job, webhook cancel, hay giữ đến khi admin hủy? Trade-off chính với UX + inventory?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 11 · Order status &amp; payment webhook stub (sắp tới)</div>
+    <p class="nd">Chuyển <code>pending_payment</code> → paid/cancelled; nền cho Kafka sau.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0009-cart-model-add-remove.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Tự code xong → paste: RS up, checkout 401/400/201, stock sau hold, case 409 + stock không đổi, <code>npm test</code>. Đừng gửi cả <code>src/orders</code> nếu chưa cần.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

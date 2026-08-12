@@ -245,14 +245,14 @@ curl -s -X POST http://localhost:3000/cart/items \
 
   <div class="next-box">
     <div class="nl">→ Bài tiếp theo</div>
-    <div class="nt">Bài 10 · Checkout &amp; inventory hold (sắp tới)</div>
-    <p class="nd">Từ cart → order draft; trừ/hold stock — chưa Kafka.</p>
+    <div class="nt"><a href="0010-checkout-inventory-hold.html">Bài 10 · Checkout &amp; inventory hold</a></div>
+    <p class="nd">Từ cart → order <code>pending_payment</code>; hold stock trong Mongo transaction.</p>
   </div>
 
   <div class="navbar">
     <a href="0008-mini-recall-module-1.html">← Trước</a>
     <a href="index.html">🏠 Mục lục</a>
-    <a class="disabled">Sau →</a>
+    <a href="0010-checkout-inventory-hold.html">Sau →</a>
   </div>
 
   <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Tự code xong → paste: register→token, <code>/cart</code> 401, add → get → remove, soft-deleted 404, <code>npm test</code>. Đừng gửi cả folder <code>src/cart</code> nếu chưa cần — output curl + test đủ để chấm.</p>
