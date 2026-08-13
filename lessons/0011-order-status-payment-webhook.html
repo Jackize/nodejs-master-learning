@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 11 · Order status &amp; payment webhook stub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 2 · Bài 11</span>
+  <h1>Order status &amp; payment webhook stub</h1>
+  <p class="subtitle">Win: <code>POST /webhooks/payment</code> (secret header, <em>không</em> JWT) chuyển <code>pending_payment</code> → <code>paid</code> hoặc <code>cancelled</code> + <strong>release stock</strong> khi failed; gọi lại paid an toàn (idempotent).</p>
+  <p class="meta-line">⏱ ~75–100 phút · 🎯 Tự code — verify: Joi secret, transition máy trạng thái, rollback stock.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill vào <code>shopstream/</code>. Checkout của bạn có thể là <code>/order/checkout</code> hoặc <code>/orders/checkout</code> — giữ nguyên; bài này thêm webhook + status.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Bài 10: checkout hold stock → Order chờ tiền. Bài này: “cổng thanh toán giả” báo kết quả. Provider thật (Stripe…) gọi webhook bằng <strong>shared secret / chữ ký</strong>, không dùng JWT buyer — xem mindset bảo mật webhook (vd <a href="https://docs.stripe.com/webhooks" target="_blank">Stripe Webhooks</a>). Kafka Module 3 sẽ emit event <em>sau</em> khi status đổi.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao failed phải release stock?</div>
+    <p>Hold lúc checkout khóa hàng cho order. Payment fail / user bỏ → không release = kho “chết”. Đây là câu trả lời tư duy Bài 10: webhook cancel (hoặc TTL job) hoàn stock. Trade-off TTL vs webhook tức thì — MVP dùng webhook <code>failed</code>.</p>
+  </div>
+
+  <h2>0. Env: <code>PAYMENT_WEBHOOK_SECRET</code></h2>
+  <div class="code-block">
+    <span class="code-label">env.validation.ts — thêm</span>
+<pre><code>PAYMENT_WEBHOOK_SECRET: Joi.string().min(<span class="num">16</span>).required(),</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">.env / .env.example</span>
+<pre><code>PAYMENT_WEBHOOK_SECRET=dev-payment-webhook-secret</code></pre>
+  </div>
+  <p>Cập nhật <code>env.validation.spec.ts</code>: thiếu secret → fail. App không start nếu quên biến này (fail-fast Bài 01).</p>
+
+  <h2>1. Mở rộng <code>OrderStatus</code></h2>
+  <div class="code-block">
+    <span class="code-label">order.schema.ts</span>
+<pre><code><span class="kw">export enum</span> <span class="fn">OrderStatus</span> {
+  PendingPayment = <span class="str">'pending_payment'</span>,
+  Paid = <span class="str">'paid'</span>,
+  Cancelled = <span class="str">'cancelled'</span>,
+}</code></pre>
+  </div>
+  <table class="data">
+    <thead><tr><th>Từ \ Kết quả webhook</th><th><code>paid</code></th><th><code>failed</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>pending_payment</code></td><td>→ <code>paid</code></td><td>→ <code>cancelled</code> + release stock</td></tr>
+      <tr><td><code>paid</code></td><td>idempotent (trả lại order)</td><td><code>409 Conflict</code></td></tr>
+      <tr><td><code>cancelled</code></td><td><code>409</code></td><td>idempotent</td></tr>
+    </tbody>
+  </table>
+
+  <h2>2. Catalog — <code>releaseStock</code></h2>
+  <div class="code-block">
+    <span class="code-label">products.service.ts — thêm</span>
+<pre><code><span class="cmt">// Đối xứng holdStock — hoàn số lượng đã trừ</span>
+<span class="kw">async</span> <span class="fn">releaseStock</span>(
+  productId: string,
+  quantity: number,
+  session?: ClientSession,
+): Promise&lt;void&gt; {
+  <span class="kw">await this</span>.productModel
+    .findOneAndUpdate(
+      { _id: productId },
+      { $inc: { stock: quantity } },
+      { new: <span class="kw">true</span>, session },
+    )
+    .exec();
+}</code></pre>
+  </div>
+
+  <h2>3. DTO + WebhooksController</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code><span class="cmt"># file mới trong src/orders/dto và src/orders — tạo trong editor</span></code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">payment-webhook.dto.ts</span>
+<pre><code><span class="kw">export class</span> <span class="fn">PaymentWebhookDto</span> {
+  @<span class="fn">IsMongoId</span>()
+  orderId!: string;
+
+  @<span class="fn">IsIn</span>([<span class="str">'paid'</span>, <span class="str">'failed'</span>])
+  result!: <span class="str">'paid'</span> | <span class="str">'failed'</span>;
+}</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">webhooks.controller.ts</span>
+<pre><code>@<span class="fn">Controller</span>(<span class="str">'webhooks'</span>)
+<span class="kw">export class</span> <span class="fn">WebhooksController</span> {
+  <span class="kw">constructor</span>(<span class="kw">private readonly</span> ordersService: OrdersService) {}
+
+  @<span class="fn">Post</span>(<span class="str">'payment'</span>)
+  <span class="fn">payment</span>(
+    @<span class="fn">Headers</span>(<span class="str">'x-payment-secret'</span>) secret: string | undefined,
+    @<span class="fn">Body</span>() dto: PaymentWebhookDto,
+  ) {
+    <span class="kw">return this</span>.ordersService.handlePaymentWebhook(secret, dto);
+  }
+}</code></pre>
+  </div>
+  <p>Đăng ký controller trong <code>OrdersModule</code>. <strong>Không</strong> gắn <code>JwtAuthGuard</code> lên webhook.</p>
+
+  <h2>4. <code>handlePaymentWebhook</code> (ý chính)</h2>
+  <div class="code-block">
+    <span class="code-label">orders.service.ts</span>
+<pre><code><span class="kw">async</span> <span class="fn">handlePaymentWebhook</span>(secret: string | undefined, dto: PaymentWebhookDto) {
+  <span class="kw">const</span> expected = <span class="kw">this</span>.config.getOrThrow&lt;string&gt;(<span class="str">'PAYMENT_WEBHOOK_SECRET'</span>);
+  <span class="kw">if</span> (!secret || secret !== expected) {
+    <span class="kw">throw new</span> <span class="fn">UnauthorizedException</span>(<span class="str">'Invalid webhook secret'</span>);
+  }
+
+  <span class="kw">const</span> session = <span class="kw">await this</span>.connection.startSession();
+  <span class="kw">try</span> {
+    <span class="kw">let</span> orderDoc!: OrderDocument;
+    <span class="kw">await</span> session.withTransaction(<span class="kw">async</span> () => {
+      <span class="kw">const</span> order = <span class="kw">await this</span>.orderModel.findById(dto.orderId).session(session).exec();
+      <span class="kw">if</span> (!order) <span class="kw">throw new</span> <span class="fn">NotFoundException</span>(<span class="str">'Order not found'</span>);
+
+      <span class="kw">if</span> (dto.result === <span class="str">'paid'</span>) {
+        <span class="kw">if</span> (order.status === OrderStatus.Paid) { orderDoc = order; <span class="kw">return</span>; } <span class="cmt">// idempotent</span>
+        <span class="kw">if</span> (order.status !== OrderStatus.PendingPayment) {
+          <span class="kw">throw new</span> <span class="fn">ConflictException</span>(<span class="str">`Cannot mark paid from status ${order.status}`</span>);
+        }
+        order.status = OrderStatus.Paid;
+        <span class="kw">await</span> order.save({ session });
+        orderDoc = order;
+        <span class="kw">return</span>;
+      }
+
+      <span class="cmt">// failed → cancel + release</span>
+      <span class="kw">if</span> (order.status === OrderStatus.Cancelled) { orderDoc = order; <span class="kw">return</span>; }
+      <span class="kw">if</span> (order.status !== OrderStatus.PendingPayment) {
+        <span class="kw">throw new</span> <span class="fn">ConflictException</span>(<span class="str">`Cannot cancel from status ${order.status}`</span>);
+      }
+      <span class="kw">for</span> (<span class="kw">const</span> item <span class="kw">of</span> order.items) {
+        <span class="kw">await this</span>.productService.releaseStock(String(item.productId), item.quantity, session);
+      }
+      order.status = OrderStatus.Cancelled;
+      <span class="kw">await</span> order.save({ session });
+      orderDoc = order;
+    });
+    <span class="kw">return this</span>.toResponse(orderDoc);
+  } <span class="kw">finally</span> {
+    <span class="kw">await</span> session.endSession();
+  }
+}</code></pre>
+  </div>
+  <p>Inject thêm <code>ConfigService</code> vào <code>OrdersService</code> (ConfigModule đã global từ Bài 01).</p>
+
+  <h2>5. Unit test tối thiểu</h2>
+  <ul>
+    <li>Secret sai → <code>UnauthorizedException</code></li>
+    <li><code>failed</code> từ <code>pending_payment</code> → gọi <code>releaseStock</code>, status <code>cancelled</code></li>
+  </ul>
+  <p>Cập nhật mock constructor OrdersService (thêm <code>ConfigService</code>). Env schema tests cho secret mới.</p>
+
+  <h2>6. Sanity (nộp) — curl, không cần Postman</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>cd shopstream/api
+npm test && npm run build
+<span class="cmt"># start:dev đang chạy thì bỏ qua</span>
+
+<span class="cmt"># 1) checkout lấy ORDER_ID (giữ route checkout của bạn)</span>
+<span class="cmt"># 2) thiếu header → 401</span>
+curl -s -w <span class="str">'\n%{http_code}\n'</span> -X POST http://localhost:3000/webhooks/payment \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"orderId":"'$ORDER_ID'","result":"paid"}'</span>
+
+<span class="cmt"># 3) paid → status paid</span>
+curl -s -X POST http://localhost:3000/webhooks/payment \
+  -H <span class="str">"x-payment-secret: $PAYMENT_WEBHOOK_SECRET"</span> \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"orderId":"'$ORDER_ID'","result":"paid"}'</span>
+
+<span class="cmt"># 4) gọi paid lại → vẫn paid (không lỗi)</span>
+<span class="cmt"># 5) order khác: failed → cancelled; stock hoàn lại bằng số đã hold</span>
+<span class="cmt"># 6) cancelled rồi paid → 409</span></code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Webhook bị gửi trùng (at-least-once) thì sao?<br>
+    <strong>A gọn:</strong> Idempotent theo trạng thái (hoặc theo <code>eventId</code> đã xử lý). <code>paid</code> lần 2 trên order đã <code>paid</code> → no-op thành công. Không trừ/release stock hai lần.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Vì sao webhook payment không dùng JwtAuthGuard của buyer?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — caller là payment provider, xác thực bằng secret/chữ ký.">A. Caller là provider; xác thực bằng shared secret / signature</button>
+    <button class="opt" data-correct="false" data-explain="Sai — webhook vẫn cần auth, chỉ khác cơ chế.">B. Webhook không bao giờ cần bảo vệ</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Vì Nest cấm JWT trên POST</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. <code>result: failed</code> trên order <code>pending_payment</code> phải làm gì với stock?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — release đối xứng hold lúc checkout.">A. <code>releaseStock</code> rồi đánh <code>cancelled</code></button>
+    <button class="opt" data-correct="false" data-explain="Sai — hàng vẫn bị khóa.">B. Giữ hold mãi</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Soft-delete product</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. Gọi <code>paid</code> lần 2 khi order đã <code>paid</code>?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — webhook hay bị retry.">A. Idempotent: trả order, không đổi gì thêm</button>
+    <button class="opt" data-correct="false" data-explain="Sai — retry webhook là bình thường.">B. Luôn 500</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Tạo order mới</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li><code>PAYMENT_WEBHOOK_SECRET</code> trong Joi + .env</li>
+      <li>Status: <code>pending_payment</code> | <code>paid</code> | <code>cancelled</code></li>
+      <li><code>POST /webhooks/payment</code> + header <code>x-payment-secret</code></li>
+      <li>Sai secret → 401; <code>failed</code> → release stock; paid trùng → OK</li>
+      <li>Transition bất hợp lệ → 409</li>
+      <li><code>npm test</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>7. Câu hỏi tư duy</h2>
+  <p>Sau khi <code>paid</code>, ShopStream sẽ cần thông báo user (email/push). Emit event ngay trong webhook handler hay qua outbox/Kafka? Trade-off chính trước khi sang Module 3?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 12 · Idempotency key HTTP (sắp tới)</div>
+    <p class="nd">Chống double-checkout khi client retry — nền trước Kafka consumer.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0010-checkout-inventory-hold.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Xong → nhờ mình curl giúp hoặc tự paste: 401 secret, paid, paid lại, failed + stock hoàn, 409. <code>npm test</code> kèm theo.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

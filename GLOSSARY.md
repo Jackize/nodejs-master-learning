@@ -31,3 +31,6 @@
 | **Replica set (Mongo)** | Cụm Mongo (có thể 1 node) — điều kiện để multi-document transaction chạy. |
 | **withTransaction** | Helper session Mongoose: commit/abort (+ retry transient) quanh callback. |
 | **pending_payment** | Trạng thái Order sau checkout: hàng đã hold, chờ thanh toán. |
+| **Payment webhook** | HTTP callback từ payment provider báo kết quả; auth bằng secret/signature, không JWT user. |
+| **Idempotent webhook** | Xử lý trùng event an toàn (vd paid lần 2 trên order đã paid → no-op). |
+| **releaseStock** | Hoàn số lượng đã hold khi hủy / payment failed. |
