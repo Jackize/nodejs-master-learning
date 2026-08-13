@@ -1,11 +1,13 @@
+export type CartItemResponse = {
+  productId: string;
+  quantity: number;
+  name: string;
+  unitPrice: number;
+};
+
 export type CartResponse = {
   id: string;
   userId: string;
-  items: {
-    productId: string;
-    quantity: number;
-    name: string;
-    unitPrice: number;
-  }[];
+  items: CartItemResponse[];
   total: number;
 };

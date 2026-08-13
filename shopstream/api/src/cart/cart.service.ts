@@ -1,10 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
 import { ProductsService } from './../catalog/products.service';
 import { AddCartItemDto } from './dto/add-cart-item.dto';
 import { CartResponse } from './dto/cart-response.types';
-import { Cart, CartDocument } from './schemas/cart.schema';
+import { Cart, CartDocument, CartItem } from './schemas/cart.schema';
 
 @Injectable()
 export class CartService {
@@ -59,6 +59,27 @@ export class CartService {
   async getCart(userId: string): Promise<CartResponse> {
     const cart = await this.getOrCreateCart(userId);
     return this.toResponse(cart);
+  }
+
+  async getItemsOrEmpty(
+    userId: string,
+    session?: ClientSession,
+  ): Promise<CartItem[] | null> {
+    const cart = await this.cartModel
+      .findOne({ userId: new Types.ObjectId(userId) }, null, { session })
+      .exec();
+    if (!cart) return null;
+    return cart.items;
+  }
+
+  async clearItems(userId: string, session?: ClientSession): Promise<void> {
+    await this.cartModel
+      .updateOne(
+        { userId: new Types.ObjectId(userId) },
+        { $set: { items: [] } },
+        { session },
+      )
+      .exec();
   }
 
   private toResponse(doc: CartDocument): CartResponse {

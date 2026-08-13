@@ -18,10 +18,10 @@ export class UsersService {
   }
 
   async findByEmail(email: string): Promise<UserDocument | null> {
-    return this.userModel.findOne({ email }).select('+passwordHash');
+    return this.userModel.findOne({ email }).select('+passwordHash').exec();
   }
 
   async findById(id: string): Promise<UserDocument | null> {
-    return this.userModel.findById(id);
+    return this.userModel.findById(id).exec();
   }
 }

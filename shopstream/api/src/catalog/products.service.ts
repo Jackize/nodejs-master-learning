@@ -1,6 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { ClientSession, Model } from 'mongoose';
 import { CreateProductDto } from './dto/create-product.dto';
 import { ListProductsQueryDto } from './dto/list-products-query.dto';
 import { PaginatedProducts, ProductResponse } from './product.types';
@@ -73,5 +77,26 @@ export class ProductsService {
       )
       .exec();
     if (!doc) throw new NotFoundException('Product not found');
+  }
+
+  async holdStock(
+    productId: string,
+    quantity: number,
+    session?: ClientSession,
+  ): Promise<void> {
+    const updated = await this.productModel
+      .findOneAndUpdate(
+        {
+          _id: productId,
+          deletedAt: null,
+          stock: { $gte: quantity },
+        },
+        {
+          $inc: { stock: -quantity },
+        },
+        { new: true, session },
+      )
+      .exec();
+    if (!updated) throw new ConflictException('Insufficient stock');
   }
 }
