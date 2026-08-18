@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 12 · Idempotency key HTTP (checkout)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 2 · Bài 12</span>
+  <h1>Idempotency key HTTP (checkout)</h1>
+  <p class="subtitle">Win: <code>POST …/checkout</code> bắt buộc header <code>Idempotency-Key</code>; gọi lại cùng key → <strong>cùng một order</strong>, stock chỉ trừ một lần (không double-checkout khi client retry).</p>
+  <p class="meta-line">⏱ ~75–100 phút · 🎯 Tự code — pattern giống <a href="https://docs.stripe.com/api/idempotent_requests" target="_blank">Stripe Idempotent requests</a>.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill vào <code>shopstream/</code>. Giữ route checkout hiện tại (<code>/order/checkout</code> hoặc <code>/orders/…</code>). Webhook Bài 11 không đổi.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Checkout đã atomic trong transaction — nhưng <em>hai request HTTP</em> (timeout → client bấm lại) vẫn tạo hai order / trừ stock hai lần. <code>Idempotency-Key</code> = client gửi UUID; server nhớ kết quả lần đầu. Đây là nền tư duy trước Kafka consumer (at-least-once → xử lý trùng).</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao bắt buộc key trên checkout?</div>
+    <p>Stripe cho phép không gửi key (mỗi lần = thao tác mới). ShopStream <strong>require</strong> key ở checkout để bạn không quên — money/path nguy hiểm. Key scope theo <code>userId</code> (user A không tái sử dụng record của user B).</p>
+  </div>
+
+  <h2>1. Schema lưu key</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code><span class="cmt"># tạo file trong editor: src/orders/schemas/idempotency-record.schema.ts</span></code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">idempotency-record.schema.ts — ý chính</span>
+<pre><code><span class="kw">export enum</span> <span class="fn">IdempotencyStatus</span> {
+  Started = <span class="str">'started'</span>,
+  Completed = <span class="str">'completed'</span>,
+}
+
+@<span class="fn">Schema</span>({ timestamps: <span class="kw">true</span>, collection: <span class="str">'idempotency_records'</span> })
+<span class="kw">export class</span> <span class="fn">IdempotencyRecord</span> {
+  @<span class="fn">Prop</span>({ type: Types.ObjectId, ref: <span class="str">'User'</span>, required: <span class="kw">true</span> })
+  userId!: Types.ObjectId;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, trim: <span class="kw">true</span>, maxlength: <span class="num">255</span> })
+  key!: string;
+
+  @<span class="fn">Prop</span>({ required: <span class="kw">true</span>, enum: Object.values(IdempotencyStatus) })
+  status!: IdempotencyStatus;
+
+  @<span class="fn">Prop</span>({ type: Types.ObjectId, ref: <span class="str">'Order'</span>, default: <span class="kw">null</span> })
+  orderId?: Types.ObjectId | <span class="kw">null</span>;
+}
+
+<span class="cmt">// Unique compound — claim key atomic qua insert</span>
+IdempotencyRecordSchema.index({ userId: <span class="num">1</span>, key: <span class="num">1</span> }, { unique: <span class="kw">true</span> });</code></pre>
+  </div>
+  <p>Đăng ký schema trong <code>OrdersModule</code> <code>MongooseModule.forFeature([...])</code>.</p>
+
+  <h2>2. Controller đọc header</h2>
+  <div class="code-block">
+    <span class="code-label">orders.controller — checkout</span>
+<pre><code>@<span class="fn">Post</span>(<span class="str">'checkout'</span>) <span class="cmt">// hoặc '/checkout' như bạn đang có</span>
+<span class="fn">checkout</span>(
+  @<span class="fn">Req</span>() req: { user: { userId: string } },
+  @<span class="fn">Headers</span>(<span class="str">'idempotency-key'</span>) idempotencyKey: string | undefined,
+) {
+  <span class="kw">return this</span>.ordersService.checkout(req.user.userId, idempotencyKey);
+}</code></pre>
+  </div>
+  <p>Nest/Express normalize header về chữ thường → dùng <code>'idempotency-key'</code>. Client gửi <code>Idempotency-Key</code> (chuẩn Stripe).</p>
+
+  <h2>3. Service — claim → checkout → complete</h2>
+  <div class="code-block">
+    <span class="code-label">orders.service — luồng</span>
+<pre><code><span class="kw">async</span> <span class="fn">checkout</span>(userId: string, idempotencyKey?: string) {
+  <span class="kw">if</span> (!idempotencyKey?.trim()) {
+    <span class="kw">throw new</span> <span class="fn">BadRequestException</span>(<span class="str">'Idempotency-Key header is required'</span>);
+  }
+  <span class="kw">const</span> key = idempotencyKey.trim();
+  <span class="kw">const</span> uid = <span class="kw">new</span> Types.ObjectId(userId);
+
+  <span class="kw">try</span> {
+    <span class="kw">await this</span>.idemModel.create({
+      userId: uid, key, status: IdempotencyStatus.Started, orderId: <span class="kw">null</span>,
+    });
+  } <span class="kw">catch</span> (err: unknown) {
+    <span class="kw">if</span> ((err <span class="kw">as</span> { code?: number }).code !== <span class="num">11000</span>) <span class="kw">throw</span> err;
+    <span class="kw">const</span> existing = <span class="kw">await this</span>.idemModel.findOne({ userId: uid, key }).exec();
+    <span class="kw">if</span> (existing?.status === IdempotencyStatus.Completed && existing.orderId) {
+      <span class="kw">const</span> order = <span class="kw">await this</span>.orderModel.findById(existing.orderId).exec();
+      <span class="kw">if</span> (!order) <span class="kw">throw new</span> <span class="fn">NotFoundException</span>(<span class="str">'Order not found'</span>);
+      <span class="kw">return this</span>.toResponse(order); <span class="cmt">// replay — không holdStock lại</span>
+    }
+    <span class="kw">throw new</span> <span class="fn">ConflictException</span>(<span class="str">'Idempotency key in progress'</span>);
+  }
+
+  <span class="kw">try</span> {
+    <span class="kw">const</span> order = <span class="kw">await this</span>.createOrderFromCart(userId); <span class="cmt">// logic Bài 10</span>
+    <span class="kw">await this</span>.idemModel.updateOne(
+      { userId: uid, key },
+      { $set: { status: IdempotencyStatus.Completed, orderId: <span class="kw">new</span> Types.ObjectId(order.id) } },
+    ).exec();
+    <span class="kw">return</span> order;
+  } <span class="kw">catch</span> (err) {
+    <span class="kw">await this</span>.idemModel.deleteOne({ userId: uid, key }).exec(); <span class="cmt">// cho retry cùng key khi fail</span>
+    <span class="kw">throw</span> err;
+  }
+}</code></pre>
+  </div>
+  <p>Tách <code>createOrderFromCart</code> (transaction hold + create + clear) khỏi lớp idem — dễ test.</p>
+
+  <h2>4. Unit test tối thiểu</h2>
+  <ul>
+    <li>Thiếu header → <code>BadRequestException</code></li>
+    <li>Duplicate key <code>completed</code> → trả order cũ, <strong>không</strong> gọi <code>holdStock</code></li>
+    <li>Duplicate key <code>started</code> → <code>ConflictException</code></li>
+  </ul>
+  <p>Mock thêm <code>idemModel</code> (<code>create</code> / <code>findOne</code> / <code>updateOne</code> / <code>deleteOne</code>). Cập nhật thứ tự constructor inject.</p>
+
+  <h2>5. Sanity (nộp) — curl</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>cd shopstream/api && npm test && npm run build
+
+TOKEN=...   <span class="cmt"># register/login</span>
+PID=...     <span class="cmt"># product stock đủ; add vào cart</span>
+KEY=$(uuidgen)   <span class="cmt"># hoặc bất kỳ chuỗi unique</span>
+
+<span class="cmt"># thiếu key → 400</span>
+curl -s -w <span class="str">'\n%{http_code}\n'</span> -X POST http://localhost:3000/order/checkout \
+  -H <span class="str">"Authorization: Bearer $TOKEN"</span>
+
+<span class="cmt"># lần 1</span>
+curl -s -X POST http://localhost:3000/order/checkout \
+  -H <span class="str">"Authorization: Bearer $TOKEN"</span> \
+  -H <span class="str">"Idempotency-Key: $KEY"</span>
+
+<span class="cmt"># lần 2 cùng KEY → cùng order id; stock chỉ trừ 1 lần</span>
+curl -s -X POST http://localhost:3000/order/checkout \
+  -H <span class="str">"Authorization: Bearer $TOKEN"</span> \
+  -H <span class="str">"Idempotency-Key: $KEY"</span>
+
+<span class="cmt"># KEY mới + giỏ trống → 400</span></code></pre>
+  </div>
+  <p>Đã verify: 2 lần cùng key → 1 document order; stock trừ đúng một lần.</p>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Idempotency HTTP vs idempotent Kafka consumer?<br>
+    <strong>A gọn:</strong> Cùng ý “xử lý trùng an toàn”. HTTP: client gửi key, server lưu response. Consumer: thường dedupe theo <code>eventId</code> / business key đã xử lý. Module 3 sẽ gặp bản event-driven.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Client timeout rồi gọi lại checkout <em>cùng</em> Idempotency-Key — server nên?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — replay kết quả, không tạo order thứ hai.">A. Trả order lần đầu; không hold stock lần nữa</button>
+    <button class="opt" data-correct="false" data-explain="Sai — đúng là lỗi double-charge/oversell.">B. Luôn tạo order mới</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Xóa user</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Insert idem record bị E11000 trong khi status còn <code>started</code>?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — tránh hai checkout song song cùng key.">A. <code>409 Conflict</code> — key đang xử lý</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Im lặng tạo order thứ hai</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. 401</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. Checkout fail (cart trống) — MVP bài này làm gì với record <code>started</code>?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — xóa để client retry cùng key sau khi sửa giỏ.">A. Xóa record → cho phép retry cùng key</button>
+    <button class="opt" data-correct="false" data-explain="Stripe lưu cả lỗi; MVP ShopStream đơn giản hơn.">B. Bắt buộc giữ forever kể cả khi fail</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Release toàn bộ catalog</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>Collection + unique index <code>(userId, key)</code></li>
+      <li>Checkout thiếu <code>Idempotency-Key</code> → 400</li>
+      <li>Cùng key → cùng <code>order.id</code>; stock không trừ đôi</li>
+      <li>Key <code>started</code> trùng → 409</li>
+      <li>Checkout fail → xóa record (retry được)</li>
+      <li><code>npm test</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>6. Câu hỏi tư duy</h2>
+  <p>TTL 24h (Stripe) cho idempotency keys: nếu không expire, collection phình. Bạn đặt TTL index Mongo thế nào, và trade-off nếu client retry sau khi key đã bị xóa?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 13 · Webhook HMAC signature (sắp tới)</div>
+    <p class="nd">Siết stub payment: chữ ký thay vì chỉ so secret plaintext.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0011-order-status-payment-webhook.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Xong → nhờ curl giúp: 400 thiếu key, 2 lần cùng key cùng order id, stock chỉ trừ 1 lần, <code>npm test</code>.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

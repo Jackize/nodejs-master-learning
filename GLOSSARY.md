@@ -34,3 +34,5 @@
 | **Payment webhook** | HTTP callback từ payment provider báo kết quả; auth bằng secret/signature, không JWT user. |
 | **Idempotent webhook** | Xử lý trùng event an toàn (vd paid lần 2 trên order đã paid → no-op). |
 | **releaseStock** | Hoàn số lượng đã hold khi hủy / payment failed. |
+| **Idempotency-Key** | Header client gửi để server nhận diện retry cùng một thao tác; tránh side-effect kép. |
+| **Idempotent replay** | Request trùng key trả kết quả đã lưu, không chạy lại logic tạo order/trừ stock. |
