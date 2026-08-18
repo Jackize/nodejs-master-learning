@@ -1,12 +1,19 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import mongoose, { Connection, Model } from 'mongoose';
 import { ProductsService } from '../catalog/products.service';
 import { CartService } from '../cart/cart.service';
 import { OrdersService } from './orders.service';
-import { OrderDocument } from './schemas/order.schema';
+import { OrderDocument, OrderStatus } from './schemas/order.schema';
 
 describe('OrdersService', () => {
   let service: OrdersService;
+
+  const WEBHOOK_SECRET = 'payment-webhook-secret-16+';
 
   const cartService = {
     getItemsOrEmpty: jest.fn(),
@@ -14,9 +21,11 @@ describe('OrdersService', () => {
   };
   const productService = {
     holdStock: jest.fn(),
+    releaseStock: jest.fn(),
   };
   const orderModel = {
     create: jest.fn(),
+    findById: jest.fn(),
   };
   const session = {
     withTransaction: jest.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -24,6 +33,9 @@ describe('OrdersService', () => {
   };
   const connection = {
     startSession: jest.fn().mockResolvedValue(session),
+  };
+  const config = {
+    getOrThrow: jest.fn(),
   };
 
   beforeEach(() => {
@@ -33,12 +45,17 @@ describe('OrdersService', () => {
       async (fn: () => Promise<unknown>) => fn(),
     );
     session.endSession.mockResolvedValue(undefined);
+    config.getOrThrow.mockImplementation((key: string) => {
+      if (key === 'PAYMENT_WEBHOOK_SECRET') return WEBHOOK_SECRET;
+      throw new Error(`Unexpected config key: ${key}`);
+    });
 
     service = new OrdersService(
       orderModel as unknown as Model<OrderDocument>,
       cartService as unknown as CartService,
       productService as unknown as ProductsService,
       connection as unknown as Connection,
+      config as unknown as ConfigService,
     );
   });
 
@@ -49,10 +66,7 @@ describe('OrdersService', () => {
     await expect(service.checkout(userId)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(cartService.getItemsOrEmpty).toHaveBeenCalledWith(
-      userId,
-      session,
-    );
+    expect(cartService.getItemsOrEmpty).toHaveBeenCalledWith(userId, session);
     expect(productService.holdStock).not.toHaveBeenCalled();
     expect(orderModel.create).not.toHaveBeenCalled();
     expect(session.endSession).toHaveBeenCalled();
@@ -83,6 +97,74 @@ describe('OrdersService', () => {
     );
     expect(orderModel.create).not.toHaveBeenCalled();
     expect(cartService.clearItems).not.toHaveBeenCalled();
+    expect(session.endSession).toHaveBeenCalled();
+  });
+
+  it('Secret sai → UnauthorizedException', async () => {
+    await expect(
+      service.handlePaymentWebhook('wrong-secret', {
+        orderId: new mongoose.Types.ObjectId().toString(),
+        result: 'failed',
+      }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(config.getOrThrow).toHaveBeenCalledWith('PAYMENT_WEBHOOK_SECRET');
+    expect(connection.startSession).not.toHaveBeenCalled();
+    expect(orderModel.findById).not.toHaveBeenCalled();
+    expect(productService.releaseStock).not.toHaveBeenCalled();
+  });
+
+  it('failed từ pending_payment → gọi releaseStock, status cancelled', async () => {
+    const orderId = new mongoose.Types.ObjectId();
+    const userId = new mongoose.Types.ObjectId();
+    const productId = new mongoose.Types.ObjectId();
+    const order = {
+      _id: orderId,
+      userId,
+      items: [
+        {
+          productId,
+          quantity: 2,
+          name: 'Áo thun',
+          unitPrice: 100_000,
+        },
+      ],
+      total: 200_000,
+      status: OrderStatus.PendingPayment,
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    orderModel.findById.mockReturnValue({
+      session: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(order),
+    });
+    productService.releaseStock.mockResolvedValue(undefined);
+
+    const result = await service.handlePaymentWebhook(WEBHOOK_SECRET, {
+      orderId: orderId.toString(),
+      result: 'failed',
+    });
+
+    expect(productService.releaseStock).toHaveBeenCalledWith(
+      productId.toString(),
+      2,
+      session,
+    );
+    expect(order.status).toBe(OrderStatus.Cancelled);
+    expect(order.save).toHaveBeenCalledWith({ session });
+    expect(result).toEqual({
+      id: orderId.toString(),
+      userId: userId.toString(),
+      items: [
+        {
+          productId: productId.toString(),
+          quantity: 2,
+          name: 'Áo thun',
+          unitPrice: 100_000,
+        },
+      ],
+      total: 200_000,
+      status: OrderStatus.Cancelled,
+    });
     expect(session.endSession).toHaveBeenCalled();
   });
 });

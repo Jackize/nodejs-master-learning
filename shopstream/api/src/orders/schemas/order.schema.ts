@@ -3,6 +3,8 @@ import { HydratedDocument, Types } from 'mongoose';
 
 export enum OrderStatus {
   PendingPayment = 'pending_payment',
+  Paid = 'paid',
+  Cancelled = 'cancelled',
 }
 
 @Schema({ _id: false })

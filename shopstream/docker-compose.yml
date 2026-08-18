@@ -21,6 +21,14 @@ services:
       retries: 12
       start_period: 15s
 
+  mongo-express:
+    image: mongo-express:1.0.2-20-alpine3.19
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017/shopstream?replicaSet=rs0&directConnection=true
+      ME_CONFIG_BASICAUTH_ENABLED: "false"
+
   kafka:
     image: apache/kafka:4.3.1
     ports:

@@ -10,4 +10,5 @@ export const envValidationSchema = Joi.object({
   MONGODB_URI: Joi.string().min(1).required(),
   JWT_SECRET: Joi.string().min(16).required(),
   JWT_EXPIRES_IN: Joi.number().integer().positive().default(86400),
+  PAYMENT_WEBHOOK_SECRET: Joi.string().min(16).required(),
 });

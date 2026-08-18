@@ -1,9 +1,17 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
 import { ProductsService } from '../catalog/products.service';
 import { CartService } from './../cart/cart.service';
 import { OrderResponse } from './dto/order-response.type';
+import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import {
   Order,
   OrderDocument,
@@ -19,6 +27,7 @@ export class OrdersService {
     private readonly cartService: CartService,
     private readonly productService: ProductsService,
     @InjectConnection() private readonly connection: Connection,
+    private readonly config: ConfigService,
   ) {}
 
   async checkout(userId: string): Promise<OrderResponse> {
@@ -51,6 +60,66 @@ export class OrdersService {
         );
         orderDoc = created[0];
         await this.cartService.clearItems(userId, session);
+      });
+      return this.toResponse(orderDoc);
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  async handlePaymentWebhook(
+    secret: string | undefined,
+    dto: PaymentWebhookDto,
+  ): Promise<OrderResponse> {
+    const expected = this.config.getOrThrow<string>('PAYMENT_WEBHOOK_SECRET');
+    if (!secret || secret !== expected) {
+      throw new UnauthorizedException('Invalid webhook secret');
+    }
+
+    const session = await this.connection.startSession();
+    try {
+      let orderDoc!: OrderDocument;
+      await session.withTransaction(async () => {
+        const order = await this.orderModel
+          .findById(dto.orderId)
+          .session(session)
+          .exec();
+        if (!order) throw new NotFoundException('Order not found');
+
+        if (dto.result === 'paid') {
+          if (order.status === OrderStatus.Paid) {
+            orderDoc = order;
+            return;
+          }
+          if (order.status !== OrderStatus.PendingPayment)
+            throw new ConflictException(
+              `Cannot mark paid from status ${order.status}`,
+            );
+          order.status = OrderStatus.Paid;
+          await order.save({ session });
+          orderDoc = order;
+          return;
+        }
+
+        // failed -> cancel + release
+        if (order.status === OrderStatus.Cancelled) {
+          orderDoc = order;
+          return;
+        }
+        if (order.status !== OrderStatus.PendingPayment)
+          throw new ConflictException(
+            `Cannot mark cancelled from status ${order.status}`,
+          );
+        for (const item of order.items) {
+          await this.productService.releaseStock(
+            String(item.productId),
+            item.quantity,
+            session,
+          );
+        }
+        order.status = OrderStatus.Cancelled;
+        await order.save({ session });
+        orderDoc = order;
       });
       return this.toResponse(orderDoc);
     } finally {

@@ -99,4 +99,22 @@ export class ProductsService {
       .exec();
     if (!updated) throw new ConflictException('Insufficient stock');
   }
+
+  async releaseStock(
+    productId: string,
+    quantity: number,
+    session?: ClientSession,
+  ): Promise<void> {
+    await this.productModel
+      .findOneAndUpdate(
+        {
+          _id: productId,
+        },
+        {
+          $inc: { stock: quantity },
+        },
+        { new: true, session },
+      )
+      .exec();
+  }
 }
