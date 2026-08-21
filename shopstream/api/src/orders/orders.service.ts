@@ -13,6 +13,11 @@ import { CartService } from './../cart/cart.service';
 import { OrderResponse } from './dto/order-response.type';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
 import {
+  IdempotencyRecord,
+  IdempotencyRecordDocument,
+  IdempotencyStatus,
+} from './schemas/idempotency-record.schema';
+import {
   Order,
   OrderDocument,
   OrderItem,
@@ -24,13 +29,15 @@ export class OrdersService {
   constructor(
     @InjectModel(Order.name)
     private readonly orderModel: Model<OrderDocument>,
+    @InjectModel(IdempotencyRecord.name)
+    private readonly idempotencyRecordModel: Model<IdempotencyRecordDocument>,
     private readonly cartService: CartService,
     private readonly productService: ProductsService,
     @InjectConnection() private readonly connection: Connection,
     private readonly config: ConfigService,
   ) {}
 
-  async checkout(userId: string): Promise<OrderResponse> {
+  async createOrderFromCart(userId: string): Promise<OrderResponse> {
     const session = await this.connection.startSession();
     try {
       let orderDoc!: OrderDocument;
@@ -64,6 +71,58 @@ export class OrdersService {
       return this.toResponse(orderDoc);
     } finally {
       await session.endSession();
+    }
+  }
+
+  async checkout(
+    userId: string,
+    idempotencyKey: string | undefined,
+  ): Promise<OrderResponse> {
+    if (!idempotencyKey)
+      throw new BadRequestException('Idempotency-Key header is required');
+    const key = idempotencyKey.trim();
+    const uid = new Types.ObjectId(userId);
+
+    try {
+      await this.idempotencyRecordModel.create({
+        userId: uid,
+        key,
+        status: IdempotencyStatus.Started,
+        orderId: null,
+      });
+    } catch (error: unknown) {
+      if ((error as { code?: number }).code !== 11000) throw error; //unique constraint violation
+      const existing = await this.idempotencyRecordModel
+        .findOne({ userId: uid, key })
+        .exec();
+      if (
+        existing?.status === IdempotencyStatus.Completed &&
+        existing.orderId
+      ) {
+        const order = await this.orderModel.findById(existing.orderId).exec();
+        if (!order) throw new NotFoundException('Order not found');
+        return this.toResponse(order); //replay - don't hold stock again
+      }
+      throw new ConflictException('Idempotency key in progress');
+    }
+
+    try {
+      const order = await this.createOrderFromCart(userId);
+      await this.idempotencyRecordModel
+        .updateOne(
+          { userId: uid, key },
+          {
+            $set: {
+              status: IdempotencyStatus.Completed,
+              orderId: new Types.ObjectId(order.id),
+            },
+          },
+        )
+        .exec();
+      return order;
+    } catch (error) {
+      await this.idempotencyRecordModel.deleteOne({ userId: uid, key }).exec(); // allow retry when duplicate idempotency key is submitted
+      throw error;
     }
   }
 
