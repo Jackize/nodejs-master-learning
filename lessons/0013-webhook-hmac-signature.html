@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 13 · Webhook HMAC signature</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 2 · Bài 13</span>
+  <h1>Webhook HMAC signature</h1>
+  <p class="subtitle">Win: <code>POST /webhooks/payment</code> không còn so secret plaintext — verify header <code>x-payment-signature: t=…,v1=…</code> (HMAC-SHA256 trên <strong>raw body</strong>); body bị sửa → 401.</p>
+  <p class="meta-line">⏱ ~75–100 phút · 🎯 Tự code — tinh thần <a href="https://docs.stripe.com/webhooks/signatures" target="_blank">Stripe webhook signatures</a> + Nest <code>rawBody</code>.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill vào <code>shopstream/</code>. Giữ logic paid/failed Bài 11; chỉ đổi lớp xác thực. Cheat-sheet Module 2: <a href="../reference/nestjs-module2-cart-order.html">Cart → Order</a>.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Bài 11: header secret tĩnh — ai biết secret là gọi được, và <em>không</em> chứng minh body nguyên vẹn. HMAC: provider ký <code>timestamp + raw JSON</code>; bạn tính lại bằng cùng secret. Sai 1 byte body → chữ ký lệch. Kafka sau này cũng hay ký/verify payload ở biên.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Vì sao phải raw body?</div>
+    <p><code>JSON.parse</code> rồi <code>JSON.stringify</code> lại có thể đổi khoảng trắng/thứ tự key → HMAC lệch dù “cùng object”. Stripe docs nhấn: verify trên bytes gốc. Nest: <code>NestFactory.create(AppModule, { rawBody: true })</code> rồi đọc <code>req.rawBody</code>.</p>
+  </div>
+
+  <h2>1. Bật <code>rawBody</code></h2>
+  <div class="code-block">
+    <span class="code-label">main.ts</span>
+<pre><code><span class="kw">const</span> app = <span class="kw">await</span> NestFactory.create(AppModule, { rawBody: <span class="kw">true</span> });</code></pre>
+  </div>
+
+  <h2>2. Helper verify (timing-safe)</h2>
+  <div class="code-block">
+    <span class="code-label">orders/utils/payment-signature.ts — ý chính</span>
+<pre><code><span class="cmt">// Header: x-payment-signature: t=&lt;unix&gt;,v1=&lt;hex&gt;</span>
+<span class="cmt">// Signed: `${t}.${rawBodyUtf8}`</span>
+<span class="kw">const</span> expected = createHmac(<span class="str">'sha256'</span>, secret)
+  .update(<span class="str">`${t}.${rawBody.toString('utf8')}`</span>)
+  .digest(<span class="str">'hex'</span>);
+
+<span class="cmt">// So sánh độ dài + timingSafeEqual — tránh leak theo thời gian</span>
+<span class="kw">if</span> (a.length !== b.length || !timingSafeEqual(a, b)) {
+  <span class="kw">throw new</span> Error(<span class="str">'SIGNATURE_MISMATCH'</span>);
+}
+
+<span class="cmt">// |now - t| &gt; 300s → TIMESTAMP_EXPIRED (chống replay thô)</span></code></pre>
+  </div>
+  <p>Export thêm <code>signPaymentPayload</code> cho unit test / script curl (không dùng trong production handler).</p>
+
+  <h2>3. Controller + service</h2>
+  <div class="code-block">
+    <span class="code-label">webhooks.controller.ts</span>
+<pre><code>@<span class="fn">Post</span>(<span class="str">'payment'</span>)
+<span class="fn">payment</span>(
+  @<span class="fn">Req</span>() req: RawBodyRequest&lt;Request&gt;,
+  @<span class="fn">Headers</span>(<span class="str">'x-payment-signature'</span>) signature: string | undefined,
+  @<span class="fn">Body</span>() dto: PaymentWebhookDto,
+) {
+  <span class="kw">return this</span>.ordersService.handlePaymentWebhook(req.rawBody, signature, dto);
+}</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">orders.service — đầu handlePaymentWebhook</span>
+<pre><code><span class="kw">const</span> secret = <span class="kw">this</span>.config.getOrThrow&lt;string&gt;(<span class="str">'PAYMENT_WEBHOOK_SECRET'</span>);
+<span class="kw">try</span> {
+  verifyPaymentSignature({ rawBody, signatureHeader, secret });
+} <span class="kw">catch</span> {
+  <span class="kw">throw new</span> <span class="fn">UnauthorizedException</span>(<span class="str">'Invalid webhook signature'</span>);
+}
+<span class="cmt">// … giữ nguyên paid / failed + releaseStock</span></code></pre>
+  </div>
+  <p><strong>Gỡ</strong> so sánh <code>x-payment-secret === env</code>. Header cũ không còn đủ để auth.</p>
+
+  <h2>4. Unit test</h2>
+  <ul>
+    <li>Helper: body hợp lệ / body bị sửa / timestamp quá hạn</li>
+    <li>Service: signature sai → <code>UnauthorizedException</code>, không <code>startSession</code></li>
+    <li>Service: ký đúng + <code>failed</code> → vẫn gọi <code>releaseStock</code></li>
+  </ul>
+
+  <h2>5. Sanity (nộp) — curl ký bằng Node</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>cd shopstream/api && npm test && npm run build
+<span class="cmt"># docker compose up -d mongo nếu Mongo down</span>
+
+<span class="cmt"># Sau checkout lấy ORDER_ID + Idempotency-Key như Bài 12</span>
+BODY=$(node -pe <span class="str">'JSON.stringify({orderId:process.argv[1],result:"paid"})'</span> "$ORDER_ID")
+SIG=$(node -e <span class="str">'
+const {createHmac}=require("crypto");
+const secret=process.env.PAYMENT_WEBHOOK_SECRET;
+const body=process.argv[1];
+const t=Math.floor(Date.now()/1000);
+const v1=createHmac("sha256",secret).update(t+"."+body).digest("hex");
+console.log(`t=${t},v1=${v1}`);
+'</span> "$BODY")
+
+<span class="cmt"># thiếu / sai chữ ký → 401</span>
+curl -s -w <span class="str">'\n%{http_code}\n'</span> -X POST http://localhost:3000/webhooks/payment \
+  -H <span class="str">'Content-Type: application/json'</span> -d <span class="str">"$BODY"</span>
+
+<span class="cmt"># hợp lệ → paid</span>
+curl -s -X POST http://localhost:3000/webhooks/payment \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -H <span class="str">"x-payment-signature: $SIG"</span> \
+  -d <span class="str">"$BODY"</span>
+
+<span class="cmt"># đổi result trong body giữ nguyên SIG → 401</span></code></pre>
+  </div>
+  <p>Export <code>PAYMENT_WEBHOOK_SECRET</code> trong shell trước khi chạy đoạn <code>node -e</code>, hoặc hard-code tạm cho local (đừng commit).</p>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Secret header vs HMAC signature?<br>
+    <strong>A gọn:</strong> Secret chứng minh “biết khoá”; HMAC chứng minh thêm “payload không bị sửa” (và có thể gắn timestamp chống replay). Production webhook (Stripe) dùng signature + raw body.</p>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Vì sao không <code>JSON.stringify(req.body)</code> rồi mới HMAC?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — serialize lại có thể khác bytes gốc.">A. Bytes có thể khác raw → chữ ký lệch giả</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Vì Nest cấm stringify</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Vì Mongo không hiểu JSON</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. <code>timingSafeEqual</code> giúp gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — so sánh không phụ thuộc prefix khớp sớm.">A. Giảm timing attack khi so chữ ký</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Tăng tốc Mongo transaction</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Thay thế JWT</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. Attacker đổi <code>result</code> trong body nhưng giữ chữ ký cũ?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — HMAC không khớp → 401.">A. Verify fail → 401</button>
+    <button class="opt" data-correct="false" data-explain="Sai — đó là lỗ hổng nếu chỉ check secret tĩnh.">B. Vẫn accept vì có orderId hợp lệ</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Tự tạo order mới</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li><code>rawBody: true</code> trong bootstrap</li>
+      <li>Header <code>x-payment-signature</code> dạng <code>t=…,v1=…</code></li>
+      <li><code>timingSafeEqual</code> + skew timestamp ~300s</li>
+      <li>Sai/thiếu chữ ký → 401; body sửa → 401</li>
+      <li>Chữ ký đúng → paid/failed như Bài 11</li>
+      <li><code>npm test</code> xanh (kèm test helper)</li>
+    </ul>
+  </div>
+
+  <h2>6. Câu hỏi tư duy</h2>
+  <p>Timestamp skew 5 phút: quá hẹp thì clock skew làm fail; quá rộng thì mở cửa replay. Bạn chọn cửa sổ thế nào cho webhook payment nội bộ vs public internet?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 14 · Mini-recall Module 2 (sắp tới)</div>
+    <p class="nd">Ôn cart → checkout → idempotency → webhook trước khi sang Kafka.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0012-idempotency-key-checkout.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Xong → nhờ curl: 401 thiếu/sai/tamper, 201 paid với HMAC đúng, <code>npm test</code>.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

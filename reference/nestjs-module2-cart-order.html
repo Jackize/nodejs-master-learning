@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cheat-sheet · Module 2 Cart &amp; Order</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../lessons/lesson.css">
+</head>
+<body>
+<div class="wrap">
+  <span class="lesson-tag">Reference · Module 2</span>
+  <h1>Cart → Order — ôn nhanh</h1>
+  <p class="subtitle">Bài 09–13: giỏ, checkout + hold stock, webhook status, idempotency HTTP, HMAC.</p>
+
+  <h2>Cart (09)</h2>
+  <ul>
+    <li>1 cart / <code>userId</code> (ObjectId); JWT trên <code>/cart</code></li>
+    <li>Add qua <code>ProductsService.findById</code> (soft-deleted → 404)</li>
+    <li>Snapshot <code>name</code> + <code>unitPrice</code> trên item</li>
+  </ul>
+
+  <h2>Checkout + inventory (10)</h2>
+  <ul>
+    <li>Mongo <strong>replica set</strong> bắt buộc cho multi-doc transaction</li>
+    <li><code>holdStock</code>: <code>stock &gt;= qty</code> + <code>$inc: -qty</code> → thiếu = 409</li>
+    <li><code>withTransaction</code>: hold → create order <code>pending_payment</code> → clear cart</li>
+  </ul>
+
+  <h2>Payment webhook (11–13)</h2>
+  <table class="data">
+    <thead><tr><th>Từ \ result</th><th><code>paid</code></th><th><code>failed</code></th></tr></thead>
+    <tbody>
+      <tr><td><code>pending_payment</code></td><td>→ <code>paid</code></td><td>→ <code>cancelled</code> + <code>releaseStock</code></td></tr>
+      <tr><td>đã cùng trạng thái</td><td colspan="2">idempotent no-op</td></tr>
+      <tr><td>transition khác</td><td colspan="2">409 Conflict</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Bài 11: secret header (học flow)</li>
+    <li>Bài 13: <code>x-payment-signature: t=…,v1=…</code> HMAC trên <strong>rawBody</strong> + skew ~300s</li>
+    <li>Env: <code>PAYMENT_WEBHOOK_SECRET</code> (signing key)</li>
+  </ul>
+
+  <h2>Idempotency-Key (12)</h2>
+  <ul>
+    <li>Checkout <strong>bắt buộc</strong> header; unique <code>(userId, key)</code></li>
+    <li><code>started</code> → claim; <code>completed</code> + <code>orderId</code> → replay</li>
+    <li>Đang <code>started</code> → 409; checkout fail → xóa record (retry)</li>
+  </ul>
+
+  <h2>Route gợi ý ShopStream</h2>
+  <table class="data">
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/order/checkout</code></td><td>JWT + Idempotency-Key</td></tr>
+      <tr><td>POST</td><td><code>/webhooks/payment</code></td><td>HMAC signature (không JWT)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Phỏng vấn nhanh</h2>
+  <ul>
+    <li>Hold sớm vs trừ lúc paid — trade-off oversell vs stock “chết”</li>
+    <li>HTTP idempotency vs Kafka consumer dedupe — cùng ý “xử lý trùng”</li>
+    <li>Secret vs HMAC — integrity của payload</li>
+  </ul>
+
+  <p class="try-it">
+    <a href="../lessons/index.html">← Mục lục</a> ·
+    <a href="nestjs-module1-catalog-auth.html">Module 1</a> ·
+    <a href="nestjs-foundation-00-04.html">Foundation 00–04</a>
+  </p>
+</div>
+<script src="../lessons/lesson-enhance.js"></script>
+</body>
+</html>

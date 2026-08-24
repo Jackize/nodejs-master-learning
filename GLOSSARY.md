@@ -36,3 +36,6 @@
 | **releaseStock** | Hoàn số lượng đã hold khi hủy / payment failed. |
 | **Idempotency-Key** | Header client gửi để server nhận diện retry cùng một thao tác; tránh side-effect kép. |
 | **Idempotent replay** | Request trùng key trả kết quả đã lưu, không chạy lại logic tạo order/trừ stock. |
+| **HMAC (webhook)** | Hash có khoá — chứng minh payload đến từ ai giữ secret và chưa bị sửa. |
+| **rawBody** | Bytes body gốc trước/khi parse JSON — bắt buộc để verify chữ ký webhook. |
+| **timingSafeEqual** | So sánh buffer không phụ thuộc thời gian theo prefix khớp (giảm timing attack). |
