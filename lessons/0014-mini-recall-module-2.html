@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 14 · Mini-recall Module 2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 2 · Bài 14</span>
+  <h1>Mini-recall Module 2</h1>
+  <p class="subtitle">Win: làm hết quiz (feedback ngay) + trả lời <strong>2 câu tư duy</strong> trong chat — <em>không code mới</em>. Củng cố trước Kafka.</p>
+  <p class="meta-line">⏱ ~30–45 phút · 🎯 Spaced recall: Cart · hold/release · transaction · webhook status · Idempotency-Key · HMAC.</p>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Vì sao có bài này?</div>
+    <p>Bạn đã ship cart → checkout → payment webhook có chữ ký. Module 3 (Kafka) sẽ hỏi lại đúng các ý “trùng request / trùng event / atomic stock”. Ôn <em>vì sao</em> trước khi thêm broker. Cheat-sheet: <a href="../reference/nestjs-module2-cart-order.html">Module 2 — Cart → Order</a>.</p>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Cách nộp</div>
+    <p>1) Làm quiz trên trang đến khi xanh. 2) Trong chat gửi “quiz xong” + trả lời ngắn <strong>T1</strong> và <strong>T2</strong>. Mình chấm tư duy thật lòng — không nịnh.</p>
+  </div>
+
+  <h2>A. Cart &amp; ownership</h2>
+  <div class="quiz">
+    <div class="q">1. Add-to-cart product soft-deleted — ai nên NotFound?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — Catalog sở hữu lifecycle; Cart gọi findById.">A. <code>ProductsService.findById</code> (Cart chỉ gọi)</button>
+    <button class="opt" data-correct="false" data-explain="Sai — trùng domain, dễ lệch rule.">B. Cart tự đọc <code>deletedAt</code> trên Product</button>
+    <button class="opt" data-correct="false" data-explain="Sai — quá muộn.">C. Chỉ fail lúc payment webhook</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">2. Vì sao snapshot <code>unitPrice</code> trên CartItem / OrderItem?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — giá catalog có thể đổi sau lúc add.">A. Giữ giá lúc add; catalog có thể đổi sau</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Mongo bắt buộc embed mọi field Product</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Để nhét giá vào JWT</button>
+    <div class="feedback"></div>
+  </div>
+
+  <h2>B. Checkout &amp; inventory</h2>
+  <div class="quiz">
+    <div class="q">3. Multi-document transaction Mongo cần gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — kể cả RS 1 node.">A. Replica set (local cũng được 1 node)</button>
+    <button class="opt" data-correct="false" data-explain="Sai — standalone không hỗ trợ multi-doc txn.">B. Chỉ cần standalone Mongo</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Bắt buộc Kafka đang chạy</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">4. <code>holdStock</code> dùng filter <code>stock: { $gte: qty }</code> + <code>$inc: -qty</code> để?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — một lệnh atomic; không đủ → Conflict 409.">A. Trừ stock atomic; tránh oversell khi 2 request song song</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Soft-delete product</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Tạo index mới mỗi lần checkout</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">5. Checkout thiếu hàng giữa chừng trong <code>withTransaction</code> — kết quả?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — abort; không order lệch / stock lệch.">A. Abort — không commit order/stock/cart lệch</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Vẫn tạo order, chỉ bỏ stock</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Xóa user</button>
+    <div class="feedback"></div>
+  </div>
+
+  <h2>C. Webhook status</h2>
+  <div class="quiz">
+    <div class="q">6. <code>result: failed</code> trên order <code>pending_payment</code> phải?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — đối xứng hold lúc checkout.">A. <code>releaseStock</code> rồi <code>cancelled</code></button>
+    <button class="opt" data-correct="false" data-explain="Sai — hàng bị khóa chết.">B. Giữ hold mãi</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Đánh <code>paid</code></button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">7. Gọi <code>paid</code> lần 2 khi order đã <code>paid</code>?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — webhook hay bị retry.">A. Idempotent: trả order, không đổi thêm</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Luôn 500</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Tạo order mới</button>
+    <div class="feedback"></div>
+  </div>
+
+  <h2>D. Idempotency-Key &amp; HMAC</h2>
+  <div class="quiz">
+    <div class="q">8. Client timeout rồi checkout lại <em>cùng</em> Idempotency-Key?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — replay; không holdStock lần 2.">A. Trả cùng order; không trừ stock lần nữa</button>
+    <button class="opt" data-correct="false" data-explain="Sai — double charge / oversell.">B. Luôn tạo order mới</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. 401 vì JWT hết hạn bắt buộc</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">9. Vì sao webhook dùng HMAC + rawBody thay vì chỉ so secret header?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — chứng minh payload không bị sửa.">A. Chứng minh body nguyên vẹn (+ có thể chống replay bằng timestamp)</button>
+    <button class="opt" data-correct="false" data-explain="Sai — HMAC chậm hơn một chút nhưng đáng.">B. Vì HMAC nhanh hơn so string</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Vì Nest cấm header secret</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">10. Chuỗi ký HMAC ShopStream là?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — t + '.' + raw JSON.">A. <code>`${t}.${rawBody}`</code></button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Chỉ JWT của buyer</button>
+    <button class="opt" data-correct="false" data-explain="Sai — thiếu timestamp / sai format.">C. Chỉ <code>JSON.stringify(req.body)</code> sau khi parse</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn (nhanh)</div>
+    <p><strong>Q:</strong> Idempotency HTTP (Bài 12) liên quan gì tới Kafka consumer?<br>
+    <strong>A teaser:</strong> Cùng ý “xử lý trùng an toàn”. HTTP: client gửi key. Consumer: dedupe theo <code>eventId</code> / business key đã xử lý. Module 3 sẽ làm bản event-driven.</p>
+  </div>
+
+  <h2>E. Câu hỏi tư duy (trả lời trong chat)</h2>
+  <p><strong>T1.</strong> Sau <code>paid</code>, ShopStream cần notify user (email/push). Emit event <em>ngay trong</em> webhook handler hay ghi DB rồi publish qua outbox/Kafka? Trade-off chính (độ tin cậy vs độ phức tạp) với mission hiện tại?</p>
+  <p><strong>T2.</strong> Hai tab cùng lúc checkout <em>khác</em> Idempotency-Key nhưng cùng cart — cả hai có thể hold stock. Bạn chấp nhận (first-wins / second 409) hay cần lock cart? 1–2 câu vì sao cho MVP ShopStream.</p>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>Đã làm 10 câu quiz (feedback xanh)</li>
+      <li>Đã gửi T1 + T2 trong chat</li>
+      <li>(Tuỳ chọn) lướt cheat-sheet Module 2</li>
+    </ul>
+  </div>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 15 · Kafka zero — topic &amp; consumer group (sắp tới)</div>
+    <p class="nd">Module 3 bắt đầu — semantics trước khi nhúng Nest.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0013-webhook-hmac-signature.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Gửi T1 + T2 khi xong quiz. Trả lời nông / sai — mình nói thẳng rồi mới sang Kafka.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
