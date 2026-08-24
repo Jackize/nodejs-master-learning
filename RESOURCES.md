@@ -18,6 +18,8 @@
   Unit + e2e Nest. Use for: nâng testing từ mức trung bình lên production.
 - [Twelve-Factor App](https://12factor.net/)
   Config, logs, disposability. Use for: mindset product company / phỏng vấn.
+- [Stripe — Webhook signatures](https://docs.stripe.com/webhooks/signatures)
+  HMAC raw body + timestamp. Use for: Bài 13 harden payment webhook.
 
 ## Wisdom (Communities)
 
