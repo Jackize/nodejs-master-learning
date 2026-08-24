@@ -13,6 +13,7 @@ import {
   IdempotencyStatus,
 } from './schemas/idempotency-record.schema';
 import { OrderDocument, OrderStatus } from './schemas/order.schema';
+import { signPaymentPayload } from './utils/payment-signature';
 
 describe('OrdersService', () => {
   let service: OrdersService;
@@ -217,10 +218,14 @@ describe('OrdersService', () => {
 
   it('Secret sai → UnauthorizedException', async () => {
     await expect(
-      service.handlePaymentWebhook('wrong-secret', {
-        orderId: new mongoose.Types.ObjectId().toString(),
-        result: 'failed',
-      }),
+      service.handlePaymentWebhook(
+        Buffer.from('{"orderId":"507f1f77bcf86cd799439011","result":"failed"}'),
+        't=1,v1=deadbeef',
+        {
+          orderId: new mongoose.Types.ObjectId().toString(),
+          result: 'failed',
+        },
+      ),
     ).rejects.toBeInstanceOf(UnauthorizedException);
 
     expect(config.getOrThrow).toHaveBeenCalledWith('PAYMENT_WEBHOOK_SECRET');
@@ -253,8 +258,12 @@ describe('OrdersService', () => {
       exec: jest.fn().mockResolvedValue(order),
     });
     productService.releaseStock.mockResolvedValue(undefined);
-
-    const result = await service.handlePaymentWebhook(WEBHOOK_SECRET, {
+    const body = JSON.stringify({
+      orderId: orderId.toString(),
+      result: 'failed',
+    });
+    const sig = signPaymentPayload(WEBHOOK_SECRET, body);
+    const result = await service.handlePaymentWebhook(Buffer.from(body), sig, {
       orderId: orderId.toString(),
       result: 'failed',
     });

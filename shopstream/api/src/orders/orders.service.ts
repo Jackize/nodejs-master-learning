@@ -23,6 +23,7 @@ import {
   OrderItem,
   OrderStatus,
 } from './schemas/order.schema';
+import { verifyPaymentSignature } from './utils/payment-signature';
 
 @Injectable()
 export class OrdersService {
@@ -127,14 +128,17 @@ export class OrdersService {
   }
 
   async handlePaymentWebhook(
-    secret: string | undefined,
+    rawBody: Buffer | undefined,
+    signatureHeader: string | undefined,
     dto: PaymentWebhookDto,
   ): Promise<OrderResponse> {
-    const expected = this.config.getOrThrow<string>('PAYMENT_WEBHOOK_SECRET');
-    if (!secret || secret !== expected) {
-      throw new UnauthorizedException('Invalid webhook secret');
+    const secret = this.config.getOrThrow<string>('PAYMENT_WEBHOOK_SECRET');
+    try {
+      verifyPaymentSignature({ rawBody, signatureHeader, secret });
+    } catch {
+      // Nuốt chi tiết lỗi nội bộ — client chỉ thấy 401
+      throw new UnauthorizedException('Invalid webhook signature');
     }
-
     const session = await this.connection.startSession();
     try {
       let orderDoc!: OrderDocument;
