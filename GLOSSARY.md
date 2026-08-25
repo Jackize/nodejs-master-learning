@@ -39,3 +39,7 @@
 | **HMAC (webhook)** | Hash có khoá — chứng minh payload đến từ ai giữ secret và chưa bị sửa. |
 | **rawBody** | Bytes body gốc trước/khi parse JSON — bắt buộc để verify chữ ký webhook. |
 | **timingSafeEqual** | So sánh buffer không phụ thuộc thời gian theo prefix khớp (giảm timing attack). |
+| **Topic** | Tên log append-only trên Kafka (chuỗi event theo domain). |
+| **Partition** | Làn song song trong topic; scale consume; cùng key → cùng partition. |
+| **Consumer group** | Nhóm consumer chia partitions; cùng group = cạnh tranh; khác group = fan-out độc lập. |
+| **Offset** | Vị trí đã commit của group trên một partition — đọc tiếp từ đâu. |

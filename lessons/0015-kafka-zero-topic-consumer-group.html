@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 15 · Kafka zero — topic &amp; consumer group</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 3 · Bài 15</span>
+  <h1>Kafka zero — topic &amp; consumer group</h1>
+  <p class="subtitle">Win: tạo topic <code>shopstream.order.paid</code> (3 partitions); produce / consume bằng CLI; giải thích được <strong>consumer group</strong> + offset — <em>chưa</em> nối Nest.</p>
+  <p class="meta-line">⏱ ~60–90 phút · 🎯 Hands-on Docker Kafka đã có từ Bài 00 · verify <code>apache/kafka:4.3.1</code> · docs: <a href="https://kafka.apache.org/43/getting-started/quickstart/" target="_blank">Kafka Quickstart</a>.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill Nest. Bài này chỉ CLI trong container Kafka. Đóng góp vào ShopStream: <strong>topic thật</strong> <code>shopstream.order.paid</code> sẵn cho producer Nest (bài sau). Cheat-sheet Module 2 vẫn dùng khi ôn order flow.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Bài 14 T1: sau <code>paid</code> cần notify tin cậy → Kafka. Trước khi <code>ClientKafka</code> trong Nest, bạn phải <em>sờ</em> topic / partition / consumer group — nếu không, Nest chỉ là wrapper mơ hồ. Broker đã chạy từ Bài 00.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Topic · Partition · Consumer group (1 phút)</div>
+    <p>
+      <strong>Topic</strong> = tên log append-only (vd event “order đã paid”).<br>
+      <strong>Partition</strong> = “làn” song song trong topic — scale consume; <strong>cùng key</strong> → cùng partition (thứ tự theo key).<br>
+      <strong>Consumer group</strong> = nhiều process cùng <code>group.id</code> chia partitions; mỗi partition chỉ 1 member trong group xử lý → scale ngang, không nhân đôi mọi message cho mọi member.
+    </p>
+  </div>
+
+  <h2>0. Chuẩn bị</h2>
+  <div class="code-block">
+    <span class="code-label">bash — shopstream/</span>
+<pre><code>cd shopstream
+docker compose up -d kafka
+docker compose ps
+<span class="cmt"># kafka phải Up (healthy)</span></code></pre>
+  </div>
+  <p>Mọi lệnh dưới chạy từ thư mục <code>shopstream/</code>. Trong container, bootstrap = <code>localhost:9092</code>.</p>
+
+  <h2>1. Tạo topic ShopStream (đóng góp dự án)</h2>
+  <div class="code-block">
+    <span class="code-label">bash — tạo shopstream.order.paid</span>
+<pre><code>docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --create \
+  --topic shopstream.order.paid \
+  --partitions <span class="num">3</span> \
+  --replication-factor <span class="num">1</span> \
+  --if-not-exists
+
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --describe \
+  --topic shopstream.order.paid</code></pre>
+  </div>
+  <p>Bạn phải thấy <code>PartitionCount: 3</code>. Local RF=1 (1 broker). Production RF≥3 — phỏng vấn hay hỏi.</p>
+  <div class="callout tip">
+    <div class="ct">Cảnh báo dấu chấm trong tên topic</div>
+    <p>Kafka warn: đừng trộn <code>.</code> và <code>_</code> lung tung (metric name). ShopStream thống nhất <code>shopstream.&lt;domain&gt;.&lt;event&gt;</code> — ổn nếu nhất quán.</p>
+  </div>
+
+  <h2>2. Produce (ghi event)</h2>
+  <p>Cách A — vài dòng nhanh (không key; thường dồn 1 partition):</p>
+  <div class="code-block">
+    <span class="code-label">bash — produce không key</span>
+<pre><code>printf <span class="str">'%s\n'</span> <span class="str">'order-1 paid'</span> <span class="str">'order-2 paid'</span> <span class="str">'order-3 paid'</span> | \
+docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic shopstream.order.paid</code></pre>
+  </div>
+  <p>Cách B — <strong>có key</strong> (nên làm): cùng <code>userId</code>/<code>orderId</code> → cùng partition → giữ thứ tự theo entity:</p>
+  <div class="code-block">
+    <span class="code-label">bash — produce có key (Kafka 4.3: --reader-property)</span>
+<pre><code>printf <span class="str">'%s\n'</span> \
+  <span class="str">'ord-1:{"orderId":"ord-1","status":"paid"}'</span> \
+  <span class="str">'ord-2:{"orderId":"ord-2","status":"paid"}'</span> \
+  <span class="str">'ord-3:{"orderId":"ord-3","status":"paid"}'</span> \
+  <span class="str">'ord-1:{"orderId":"ord-1","status":"paid"}'</span> | \
+docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic shopstream.order.paid \
+  --reader-property parse.key=<span class="kw">true</span> \
+  --reader-property key.separator=:</code></pre>
+  </div>
+
+  <h2>3. Consume + consumer group</h2>
+  <div class="code-block">
+    <span class="code-label">bash — đọc từ đầu, gắn group</span>
+<pre><code>docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic shopstream.order.paid \
+  --group shopstream-notify-v1 \
+  --from-beginning \
+  --formatter-property print.key=<span class="kw">true</span> \
+  --formatter-property print.partition=<span class="kw">true</span>
+<span class="cmt"># Ctrl+C khi đã thấy message</span></code></pre>
+  </div>
+  <p>Chạy lại <strong>cùng</strong> <code>--group shopstream-notify-v1</code> <strong>không</strong> <code>--from-beginning</code>: gần như không in lại — offset đã commit. Đó là “đã xử lý tới đâu” của group.</p>
+  <div class="code-block">
+    <span class="code-label">bash — xem offset / lag</span>
+<pre><code>docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 \
+  --describe \
+  --group shopstream-notify-v1</code></pre>
+  </div>
+  <p>Cột <code>CURRENT-OFFSET</code> / <code>LOG-END-OFFSET</code> / <code>LAG</code>: lag=0 nghĩa là group đã đuổi kịp (khi không còn member active vẫn thấy offset đã lưu).</p>
+
+  <h2>4. Thí nghiệm bắt buộc — 2 group ≠ 1 group</h2>
+  <table class="data">
+    <thead><tr><th>Tình huống</th><th>Kỳ vọng</th></tr></thead>
+    <tbody>
+      <tr><td>Hai consumer <strong>cùng</strong> <code>--group shopstream-notify-v1</code></td><td>Chia partitions; mỗi message chỉ 1 trong 2 nhận (trong group)</td></tr>
+      <tr><td>Consumer <strong>group khác</strong> <code>shopstream-analytics-v1</code> + <code>--from-beginning</code></td><td>Đọc lại toàn bộ — group riêng = subscriber độc lập</td></tr>
+    </tbody>
+  </table>
+  <p>Cách làm nhanh: mở 2 terminal, cùng topic, khác group id, cả hai <code>--from-beginning</code> — cả hai in cùng payload. Đổi thành cùng group → message không nhân đôi cho mọi member (chia theo partition).</p>
+
+  <div class="callout tip">
+    <div class="ct">Góc phỏng vấn</div>
+    <p><strong>Q:</strong> Consumer group dùng để làm gì?<br>
+    <strong>A:</strong> Scale consume ngang + đảm bảo mỗi partition chỉ một member trong group xử lý. Muốn <em>mọi</em> service nhận đủ event → <strong>group id khác nhau</strong> (notify vs analytics). Liên hệ Bài 12: idempotency HTTP; Kafka at-least-once → consumer vẫn có thể nhận trùng → cần idempotent handler (bài sau).</p>
+  </div>
+
+  <h2>5. Checklist nộp (paste output)</h2>
+  <div class="code-block">
+    <span class="code-label">bash — gói bằng chứng</span>
+<pre><code>docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --list
+
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --describe --topic shopstream.order.paid
+
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --group shopstream-notify-v1</code></pre>
+  </div>
+
+  <div class="quiz">
+    <h3>🧠 Kiểm tra nhanh</h3>
+    <div class="q">Câu 1. Hai service cần <em>đều</em> nhận mọi event <code>order.paid</code>?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — mỗi service một group id.">A. Dùng hai consumer group khác nhau</button>
+    <button class="opt" data-correct="false" data-explain="Sai — cùng group thì chia partition, không nhân bản đủ cho cả hai service.">B. Bắt buộc cùng một group id</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Không cần Kafka, chỉ Mongo change stream</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Message cùng key đi đâu?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — hash key → partition cố định (trong số partition hiện có).">A. Cùng một partition (giữ thứ tự theo key)</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Luôn partition 0</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Random mỗi lần, kể cả cùng key</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. Offset trong consumer group nghĩa là gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — progress của group trên từng partition.">A. Vị trí group đã commit — đọc tiếp từ đâu</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Số partition của topic</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. JWT hết hạn</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>Kafka container healthy</li>
+      <li>Topic <code>shopstream.order.paid</code> — 3 partitions</li>
+      <li>Đã produce (≥1 message) và consume với <code>--group</code></li>
+      <li>Đã <code>describe</code> consumer group (thấy offset)</li>
+      <li>Hiểu: cùng group vs khác group</li>
+    </ul>
+  </div>
+
+  <h2>6. Câu hỏi tư duy</h2>
+  <p>Khi Nest consumer xử lý <code>order.paid</code> rồi crash <em>trước</em> khi commit offset, message sẽ được giao lại (at-least-once). Liên hệ Bài 12 Idempotency-Key: handler notify phải idempotent thế nào (theo <code>orderId</code>)?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 16 · Nest Kafka producer (sắp tới)</div>
+    <p class="nd">Publish <code>shopstream.order.paid</code> từ webhook <code>paid</code> — nối domain Module 2 với broker.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0014-mini-recall-module-2.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Xong → paste: <code>topics --list</code>, <code>describe</code> topic, <code>describe</code> group, + 1 câu: cùng group vs khác group khác gì.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>
