@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 16 · Nest Kafka producer (order.paid)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 3 · Bài 16</span>
+  <h1>Nest Kafka producer — emit <code>order.paid</code></h1>
+  <p class="subtitle">Win: khi webhook chuyển order sang <code>paid</code> (lần đầu), Nest <strong>emit</strong> event lên topic <code>shopstream.order.paid</code>; CLI consumer thấy message có <strong>key = orderId</strong>. Consumer Nest / <code>@EventPattern</code> → bài sau.</p>
+  <p class="meta-line">⏱ ~90–120 phút · 🎯 Tự code · đã verify Nest <code>@nestjs/microservices@11.2.3</code> + <code>kafkajs@2.2.4</code> trên broker Docker Bài 15 · docs: <a href="https://docs.nestjs.com/microservices/kafka" target="_blank">Nest Kafka</a>.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill vào <code>shopstream/</code>. Bạn cài package, thêm env, đăng ký <code>ClientsModule</code>, emit <strong>sau</strong> transaction Mongo commit — chỉ khi status <em>vừa</em> đổi sang <code>paid</code>. Logic HMAC / paid / failed giữ nguyên Bài 11–13.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Bài 15: topic + produce CLI. Bài này: <strong>domain</strong> (webhook paid) ghi cùng topic qua Nest <code>ClientKafka.emit</code>. Bạn đã biết partition/key — giờ key = <code>orderId</code> để notify/analytics sau này giữ thứ tự theo order.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 emit vs send (1 phút)</div>
+    <p>
+      <code>emit</code> = event-based: fire-and-forget (có ack broker), <strong>không</strong> chờ reply topic.<br>
+      <code>send</code> = request-response: Nest tạo reply topic + correlation id — thừa cho “order đã paid, ai quan tâm thì nghe”.<br>
+      ShopStream notify → dùng <code>emit</code>. Docs Nest: Event-based / Publishing events.
+    </p>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">⚠️ Dual-write (nói thẳng — sẽ đào sâu outbox sau)</div>
+    <p>Pattern bài này: <strong>Mongo commit rồi mới Kafka</strong>. Nếu emit lỗi sau khi DB đã <code>paid</code> → order paid nhưng không có event (mất notify). Ngược lại, emit trong transaction Mongo cũng không “atomic” với Kafka. Production hay dùng <strong>outbox</strong> — Sprint B. Bài này chấp nhận dual-write có ý thức + emit chỉ khi <em>transition</em> (không spam khi webhook retry trên order đã paid).</p>
+  </div>
+
+  <h2>0. Bản đồ file</h2>
+  <table class="data">
+    <thead><tr><th>File</th><th>Việc cần làm</th></tr></thead>
+    <tbody>
+      <tr><td><code>package.json</code></td><td>Cài <code>@nestjs/microservices</code> + <code>kafkajs</code> (khớp version Nest)</td></tr>
+      <tr><td><code>.env</code> / <code>.env.example</code></td><td>Thêm <code>KAFKA_BROKERS</code></td></tr>
+      <tr><td><code>src/config/env.validation.ts</code> (+ spec)</td><td>Validate / default brokers</td></tr>
+      <tr><td><code>src/messaging/kafka.constants.ts</code></td><td><strong>Mới</strong> — token inject + tên topic</td></tr>
+      <tr><td><code>src/orders/orders.module.ts</code></td><td><code>ClientsModule.registerAsync</code> + <code>producerOnlyMode</code></td></tr>
+      <tr><td><code>src/orders/orders.service.ts</code></td><td><code>OnModuleInit</code> → <code>connect()</code>; emit sau paid transition</td></tr>
+      <tr><td><code>orders.service.spec.ts</code></td><td>Mock <code>KAFKA_PRODUCER</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>1. Cài package (khớp version Nest của bạn)</h2>
+  <p>Mở <code>shopstream/api/package.json</code>, xem version <code>@nestjs/common</code> (vd <code>^11.0.1</code> / đã resolve <code>11.1.x</code>). Cài microservices <strong>cùng major.minor gần nhất</strong> — lệch patch lớn có thể gãy (<code>Cannot find module ... safe-instance-decorator</code>).</p>
+  <div class="code-block">
+    <span class="code-label">bash — shopstream/api</span>
+<pre><code>cd shopstream/api
+
+<span class="cmt"># Cách an toàn: pin đúng bản đang resolve (xem node_modules/@nestjs/common/package.json)</span>
+node -p <span class="str">"require('@nestjs/common/package.json').version"</span>
+
+<span class="cmt"># Ví dụ máy verify: common 11.1.28 → cài microservices cùng dòng, rồi nâng đồng bộ nếu cần</span>
+npm install @nestjs/microservices@11.1.28 kafkajs
+
+<span class="cmt"># Nếu start lỗi thiếu helper Nest → nâng CẢ cụm cùng version, ví dụ:</span>
+<span class="cmt"># npm install @nestjs/common@11.2.3 @nestjs/core@11.2.3 \</span>
+<span class="cmt">#   @nestjs/platform-express@11.2.3 @nestjs/microservices@11.2.3</span></code></pre>
+  </div>
+  <p>Đã verify trên sandbox copy lockfile bạn: emit OK với <code>@nestjs/microservices@11.2.3</code> + <code>kafkajs@2.2.4</code>, broker <code>127.0.0.1:9092</code>, topic <code>shopstream.order.paid</code>.</p>
+
+  <h2>2. Env + Joi</h2>
+  <div class="code-block">
+    <span class="code-label">.env và .env.example — thêm dòng</span>
+<pre><code>KAFKA_BROKERS=127.0.0.1:9092</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">src/config/env.validation.ts — thêm field</span>
+<pre><code>PAYMENT_WEBHOOK_SECRET: Joi.string().min(<span class="num">16</span>).required(),
+<span class="cmt">// CSV brokers — local 1 broker; prod có thể "b1:9092,b2:9092"</span>
+KAFKA_BROKERS: Joi.string().min(<span class="num">1</span>).default(<span class="str">'127.0.0.1:9092'</span>),
+});</code></pre>
+  </div>
+  <p>Cập nhật <code>env.validation.spec.ts</code>: case happy path vẫn pass (default); optional thêm 1 test đọc default nếu muốn.</p>
+
+  <h2>3. Constants (file mới)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/messaging</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">src/messaging/kafka.constants.ts</span>
+<pre><code><span class="cmt">/** Injection token cho ClientsModule Kafka (producer). */</span>
+<span class="kw">export const</span> KAFKA_PRODUCER = <span class="str">'KAFKA_PRODUCER'</span>;
+
+<span class="cmt">/** Topic đã tạo ở Bài 15 — pattern Nest emit = tên topic Kafka. */</span>
+<span class="kw">export const</span> ORDER_PAID_TOPIC = <span class="str">'shopstream.order.paid'</span>;</code></pre>
+  </div>
+
+  <h2>4. Đăng ký ClientsModule (producer-only)</h2>
+  <p><code>producerOnlyMode: true</code> = Nest <strong>không</strong> join consumer group chỉ để publish — đúng cho API HTTP chỉ emit. Docs Nest Kafka → Options → <code>producerOnlyMode</code>.</p>
+  <div class="code-block">
+    <span class="code-label">src/orders/orders.module.ts — imports thêm</span>
+<pre><code><span class="kw">import</span> { Module } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { ConfigService } <span class="kw">from</span> <span class="str">'@nestjs/config'</span>;
+<span class="kw">import</span> { ClientsModule, Transport } <span class="kw">from</span> <span class="str">'@nestjs/microservices'</span>;
+<span class="kw">import</span> { MongooseModule } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { KAFKA_PRODUCER } <span class="kw">from</span> <span class="str">'../messaging/kafka.constants'</span>;
+<span class="cmt">// ... các import cũ (Cart, Catalog, Auth, schemas, controllers)</span>
+
+<span class="kw">@Module</span>({
+  imports: [
+    MongooseModule.forFeature([
+      <span class="cmt">/* Order + IdempotencyRecord như cũ */</span>
+    ]),
+    AuthModule,
+    CartModule,
+    CatalogModule,
+    ClientsModule.registerAsync([
+      {
+        name: KAFKA_PRODUCER,
+        inject: [ConfigService],
+        useFactory: (config: ConfigService) => ({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: <span class="str">'shopstream-api'</span>,
+              brokers: config
+                .getOrThrow&lt;string&gt;(<span class="str">'KAFKA_BROKERS'</span>)
+                .split(<span class="str">','</span>)
+                .map((b) => b.trim())
+                .filter(Boolean),
+            },
+            <span class="cmt">// Chỉ producer — không đăng ký consumer group thừa</span>
+            producerOnlyMode: <span class="kw">true</span>,
+          },
+        }),
+      },
+    ]),
+  ],
+  controllers: [OrdersController, WebhooksController],
+  providers: [OrdersService],
+  exports: [OrdersService],
+})
+<span class="kw">export class</span> OrdersModule {}</code></pre>
+  </div>
+
+  <h2>5. OrdersService — connect + emit sau transition</h2>
+  <p>Ba điểm bắt buộc:</p>
+  <ol>
+    <li><code>await this.kafka.connect()</code> trong <code>onModuleInit</code>.</li>
+    <li>Cờ <code>becamePaid</code> = <strong>true chỉ khi</strong> đổi từ <code>pending_payment</code> → <code>paid</code> trong transaction (không emit khi order đã paid — webhook retry).</li>
+    <li>Emit <strong>sau</strong> <code>withTransaction</code> thành công; dùng <code>lastValueFrom(this.kafka.emit(...))</code> để chờ broker ack. Payload dạng <code>{ key, value }</code> (Nest docs — keyed messages).</li>
+  </ol>
+
+  <div class="code-block">
+    <span class="code-label">src/orders/orders.service.ts — imports + constructor (bổ sung)</span>
+<pre><code><span class="kw">import</span> { Inject, Injectable, OnModuleInit, <span class="cmt">/* ...exceptions cũ */</span> } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { ClientKafka } <span class="kw">from</span> <span class="str">'@nestjs/microservices'</span>;
+<span class="kw">import</span> { lastValueFrom } <span class="kw">from</span> <span class="str">'rxjs'</span>;
+<span class="kw">import</span> { KAFKA_PRODUCER, ORDER_PAID_TOPIC } <span class="kw">from</span> <span class="str">'../messaging/kafka.constants'</span>;
+
+<span class="kw">@Injectable</span>()
+<span class="kw">export class</span> OrdersService <span class="kw">implements</span> OnModuleInit {
+  <span class="kw">constructor</span>(
+    <span class="cmt">/* ... inject cũ: orderModel, cart, product, connection, config, idempotency... */</span>
+    <span class="kw">@Inject</span>(KAFKA_PRODUCER) <span class="kw">private readonly</span> kafka: ClientKafka,
+  ) {}
+
+  <span class="kw">async</span> onModuleInit(): Promise&lt;<span class="kw">void</span>&gt; {
+    <span class="kw">await</span> <span class="kw">this</span>.kafka.connect();
+  }
+
+  <span class="cmt">// ... checkout / helpers giữ nguyên</span>
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">handlePaymentWebhook — phần paid (ý chính)</span>
+<pre><code><span class="kw">async</span> handlePaymentWebhook(...): Promise&lt;OrderResponse&gt; {
+  <span class="cmt">// 1) verify HMAC như Bài 13 — giữ nguyên</span>
+  <span class="kw">const</span> session = <span class="kw">await</span> <span class="kw">this</span>.connection.startSession();
+  <span class="kw">try</span> {
+    <span class="kw">let</span> orderDoc!: OrderDocument;
+    <span class="kw">let</span> becamePaid = <span class="kw">false</span>; <span class="cmt">// chỉ true khi transition lần đầu</span>
+
+    <span class="kw">await</span> session.withTransaction(<span class="kw">async</span> () => {
+      <span class="kw">const</span> order = <span class="kw">await</span> <span class="kw">this</span>.orderModel.findById(dto.orderId).session(session).exec();
+      <span class="kw">if</span> (!order) <span class="kw">throw new</span> NotFoundException(<span class="str">'Order not found'</span>);
+
+      <span class="kw">if</span> (dto.result === <span class="str">'paid'</span>) {
+        <span class="kw">if</span> (order.status === OrderStatus.Paid) {
+          orderDoc = order;
+          <span class="kw">return</span>; <span class="cmt">// already paid → không emit lại</span>
+        }
+        <span class="kw">if</span> (order.status !== OrderStatus.PendingPayment) {
+          <span class="kw">throw new</span> ConflictException(`Cannot mark paid from status ${order.status}`);
+        }
+        order.status = OrderStatus.Paid;
+        <span class="kw">await</span> order.save({ session });
+        orderDoc = order;
+        becamePaid = <span class="kw">true</span>;
+        <span class="kw">return</span>;
+      }
+
+      <span class="cmt">// failed → cancel + releaseStock — giữ nguyên Bài 11; KHÔNG emit order.paid</span>
+      <span class="cmt">// ...</span>
+    });
+
+    <span class="cmt">// 2) Sau khi Mongo commit — mới publish</span>
+    <span class="kw">if</span> (becamePaid) {
+      <span class="kw">await</span> <span class="kw">this</span>.publishOrderPaid(orderDoc);
+    }
+
+    <span class="kw">return</span> <span class="kw">this</span>.toResponse(orderDoc);
+  } <span class="kw">finally</span> {
+    <span class="kw">await</span> session.endSession();
+  }
+}
+
+<span class="kw">private async</span> publishOrderPaid(order: OrderDocument): Promise&lt;<span class="kw">void</span>&gt; {
+  <span class="kw">const</span> orderId = order._id.toString();
+  <span class="kw">await</span> lastValueFrom(
+    <span class="kw">this</span>.kafka.emit(ORDER_PAID_TOPIC, {
+      key: orderId, <span class="cmt">// cùng order → cùng partition</span>
+      value: {
+        orderId,
+        userId: order.userId.toString(),
+        total: order.total,
+        status: OrderStatus.Paid,
+        paidAt: <span class="kw">new</span> Date().toISOString(),
+      },
+    }),
+  );
+}</code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Nếu emit throw sau khi DB đã paid?</div>
+    <p>Webhook trả 5xx → provider có thể retry. Lần 2: order đã <code>paid</code> → <code>becamePaid=false</code> → <strong>không</strong> emit lại → event vẫn mất. Đó đúng là lỗ hổng dual-write. Ghi nhớ cho outbox / replay tooling sau — đừng “sửa” bằng emit mọi lần already-paid (sẽ spam consumer).</p>
+  </div>
+
+  <h2>6. Sửa unit test</h2>
+  <p>Trong <code>orders.service.spec.ts</code>, thêm provider mock Kafka (connect no-op; emit trả Observable):</p>
+  <div class="code-block">
+    <span class="code-label">orders.service.spec.ts — provider thêm</span>
+<pre><code><span class="kw">import</span> { of } <span class="kw">from</span> <span class="str">'rxjs'</span>;
+<span class="kw">import</span> { KAFKA_PRODUCER } <span class="kw">from</span> <span class="str">'../messaging/kafka.constants'</span>;
+
+<span class="kw">const</span> kafkaMock = {
+  connect: jest.fn().mockResolvedValue(<span class="kw">undefined</span>),
+  emit: jest.fn().mockReturnValue(of(<span class="kw">undefined</span>)),
+};
+
+<span class="cmt">// trong providers của TestingModule:</span>
+{ provide: KAFKA_PRODUCER, useValue: kafkaMock },
+
+<span class="cmt">// beforeEach: kafkaMock.emit.mockClear(); kafkaMock.connect.mockClear();</span>
+
+<span class="cmt">// Test paid lần đầu: expect(kafkaMock.emit).toHaveBeenCalledWith(</span>
+<span class="cmt">//   'shopstream.order.paid',</span>
+<span class="cmt">//   expect.objectContaining({ key: expect.any(String), value: expect.objectContaining({ status: 'paid' }) }),</span>
+<span class="cmt">// );</span>
+
+<span class="cmt">// Test already paid / failed: expect(kafkaMock.emit).not.toHaveBeenCalled();</span></code></pre>
+  </div>
+  <p>Gọi <code>await service.onModuleInit()</code> trong <code>beforeEach</code> nếu test không bootstrap lifecycle — hoặc assert <code>connect</code> khi bạn chủ động gọi.</p>
+
+  <h2>7. Verify tay (bắt buộc nộp)</h2>
+  <p>Kafka + Mongo đang chạy (<code>docker compose up -d</code>). Topic Bài 15 đã có.</p>
+  <div class="code-block">
+    <span class="code-label">Terminal A — consumer theo dõi</span>
+<pre><code>cd shopstream
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic shopstream.order.paid \
+  --property print.key=<span class="kw">true</span> \
+  --property key.separator=<span class="str">'|'</span> \
+  --group shopstream-b16-verify</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">Terminal B — flow tối thiểu</span>
+<pre><code>cd shopstream/api
+npm run start:dev
+
+<span class="cmt"># 1) register/login → JWT</span>
+<span class="cmt"># 2) tạo product + add cart</span>
+<span class="cmt"># 3) checkout với Idempotency-Key → lấy orderId</span>
+<span class="cmt"># 4) ký HMAC (dùng signPaymentPayload / script bạn đã có Bài 13) rồi:</span>
+curl -sS -X POST http://127.0.0.1:3000/webhooks/payment \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -H <span class="str">"x-payment-signature: $SIG"</span> \
+  -d <span class="str">"{\"orderId\":\"$ORDER_ID\",\"result\":\"paid\"}"</span></code></pre>
+  </div>
+  <p>Terminal A phải hiện dạng:</p>
+  <div class="code-block">
+    <span class="code-label">expected consumer line</span>
+<pre><code>&lt;orderId&gt;|{<span class="str">"orderId"</span>:<span class="str">"..."</span>,<span class="str">"userId"</span>:<span class="str">"..."</span>,<span class="str">"total"</span>:...,<span class="str">"status"</span>:<span class="str">"paid"</span>,<span class="str">"paidAt"</span>:<span class="str">"..."</span>}</code></pre>
+  </div>
+  <p>Gọi <strong>lần 2</strong> cùng webhook paid → HTTP OK (idempotent) nhưng <strong>không</strong> thêm dòng consumer mới.</p>
+  <div class="code-block">
+    <span class="code-label">bash — unit + build</span>
+<pre><code>npm test
+npm run build</code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">KafkaJS partitioner warning</div>
+    <p>Log kiểu “switched default partitioner” là warning kafkajs v2 — không chặn bài. Có thể <code>export KAFKAJS_NO_PARTITIONER_WARNING=1</code> nếu muốn im.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">🎤 Góc phỏng vấn</div>
+    <p><em>“Sau payment success bạn publish Kafka thế nào?”</em> → Nói: emit event <code>order.paid</code> sau khi persist status; key = orderId; producer-only client; thừa nhận dual-write và outbox nếu hỏi reliability. Đừng nói “transaction Mongo bao luôn Kafka”.</p>
+  </div>
+
+  <h2>8. Quiz</h2>
+  <div class="quiz">
+    <div class="q">Câu 1. Vì sao dùng <code>emit</code> chứ không <code>send</code> cho order.paid?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — fan-out event, không cần reply.">A. Event-based: không cần request-response / reply topic</button>
+    <button class="opt" data-correct="false" data-explain="Sai — send mới tạo reply topic.">B. Vì emit tự tạo reply topic nhanh hơn</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Nest cấm send với Kafka</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. <code>producerOnlyMode: true</code> để làm gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — API chỉ publish, khỏi join group.">A. Bỏ đăng ký consumer group — client chỉ đóng vai producer</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Bắt buộc 3 partitions</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Tự tạo topic nếu chưa có</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. Webhook paid lần 2 (order đã paid) — hành vi đúng?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — tránh spam; dual-write mất event thì cần cơ chế khác.">A. No-op DB + không emit lại</button>
+    <button class="opt" data-correct="false" data-explain="Sai — sẽ nhân bản event.">B. Luôn emit lại để “cho chắc”</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Xoá order rồi tạo lại</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li><code>@nestjs/microservices</code> + <code>kafkajs</code> trong dependencies; Nest versions khớp</li>
+      <li><code>KAFKA_BROKERS</code> trong env + Joi</li>
+      <li><code>ClientsModule</code> + <code>producerOnlyMode: true</code></li>
+      <li><code>connect()</code> + emit có <code>key</code>/<code>value</code> sau transition paid</li>
+      <li>CLI consumer thấy 1 message; retry webhook không thêm message</li>
+      <li><code>npm test</code> + <code>npm run build</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>9. Câu hỏi tư duy</h2>
+  <p>Consumer Nest (bài sau) dùng <code>@EventPattern('shopstream.order.paid')</code> và xử lý at-least-once. Bạn thiết kế idempotency phía consumer thế nào nếu cùng <code>orderId</code> bị deliver 2 lần (rebalance / crash trước commit offset)?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 17 · Nest Kafka consumer (<code>@EventPattern</code>)</div>
+    <p class="nd">Nghe <code>shopstream.order.paid</code>, log/notify stub, hiểu groupId + at-least-once.</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0015-kafka-zero-topic-consumer-group.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Xong → paste: (1) dòng consumer <code>orderId|{...}</code>, (2) xác nhận retry không thêm message, (3) kết quả <code>npm test</code>, (4) 1 câu: vì sao không emit khi already paid.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

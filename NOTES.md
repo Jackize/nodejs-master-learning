@@ -29,3 +29,7 @@
 
 ## Teaching prefs (bổ sung)
 - **Từ Bài 04:** không code dùm vào `shopstream/` — chỉ soạn bài + verify sandbox; học viên tự viết/apply.
+
+## Current
+- Đang ở **Bài 16** — Nest Kafka producer (`emit` `shopstream.order.paid` sau webhook paid).
+- Cheat-sheet gần nhất: Module 2 (sau Bài 13). Đếm 14–16 = 3 bài → chưa đủ mốc 5.
