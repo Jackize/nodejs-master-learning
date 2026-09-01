@@ -43,3 +43,7 @@
 | **Partition** | Làn song song trong topic; scale consume; cùng key → cùng partition. |
 | **Consumer group** | Nhóm consumer chia partitions; cùng group = cạnh tranh; khác group = fan-out độc lập. |
 | **Offset** | Vị trí đã commit của group trên một partition — đọc tiếp từ đâu. |
+| **ClientKafka / emit** | Nest Kafka client; `emit(pattern, payload)` publish event (pattern ≈ tên topic); không chờ reply. |
+| **producerOnlyMode** | Cấu hình Nest Kafka client chỉ producer — không join consumer group. |
+| **Keyed message** | Kafka message có `key` (+ `value`); cùng key → cùng partition → giữ thứ tự theo entity. |
+| **Dual-write** | Ghi DB rồi publish broker tách biệt (không atomic); mất event nếu emit fail sau commit. |
