@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 17 · Nest Kafka consumer (@EventPattern)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 3 · Bài 17</span>
+  <h1>Nest Kafka consumer — <code>@EventPattern</code></h1>
+  <p class="subtitle">Win: cùng process Nest vừa HTTP vừa nghe Kafka; khi có event <code>shopstream.order.paid</code>, handler <strong>@EventPattern</strong> chạy (log notify stub). Hiểu <strong>hybrid app</strong> + <strong>consumer groupId</strong> (+ suffix <code>-server</code> của Nest).</p>
+  <p class="meta-line">⏱ ~75–100 phút · 🎯 Tự code · đã verify Nest 11.1.28 hybrid + Kafka trên Docker · docs: <a href="https://docs.nestjs.com/microservices/kafka" target="_blank">Nest Kafka</a> · <a href="https://docs.nestjs.com/faq/hybrid-application" target="_blank">Hybrid application</a>.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill <code>shopstream/</code>. Producer Bài 16 giữ nguyên. Bài này thêm <strong>consumer phía Nest</strong> (notify stub). Idempotent consumer cứng / retry-DLQ → bài sau.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Bài 15: CLI consumer + group. Bài 16: Nest <code>emit</code> lên topic. Bài này: Nest <em>nghe</em> cùng topic bằng <code>@EventPattern</code> — đóng vòng “paid → event → notify log” trong một process (hybrid).</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Hybrid app (1 phút)</div>
+    <p>
+      <code>NestFactory.create</code> = HTTP như cũ.<br>
+      <code>app.connectMicroservice({ transport: Transport.KAFKA, ... })</code> gắn thêm listener Kafka vào <strong>cùng</strong> DI graph.<br>
+      <code>await app.startAllMicroservices()</code> rồi mới <code>app.listen(port)</code>.<br>
+      Docs: FAQ → Hybrid application.
+    </p>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">⚠️ groupId bị Nest thêm <code>-server</code></div>
+    <p>Bạn khai báo <code>consumer.groupId: 'shopstream-notify-v1'</code> → Kafka thấy <code>shopstream-notify-v1<strong>-server</strong></code> (ServerKafka). ClientKafka producer thêm <code>-client</code>. Đừng ngạc nhiên khi <code>kafka-consumer-groups.sh --describe</code> hiện suffix — đây là hành vi Nest (docs Kafka options / postfixId).</p>
+  </div>
+
+  <h2>0. Bản đồ file</h2>
+  <table class="data">
+    <thead><tr><th>File</th><th>Việc cần làm</th></tr></thead>
+    <tbody>
+      <tr><td><code>.env</code> / <code>.env.example</code></td><td>Thêm <code>KAFKA_GROUP_ID</code></td></tr>
+      <tr><td><code>env.validation.ts</code> (+ spec nếu muốn)</td><td>Default group id</td></tr>
+      <tr><td><code>src/main.ts</code></td><td><code>connectMicroservice</code> + <code>startAllMicroservices</code></td></tr>
+      <tr><td><code>src/notify/*</code></td><td><strong>Module mới</strong> — controller EventPattern + service log</td></tr>
+      <tr><td><code>app.module.ts</code></td><td>Import <code>NotifyModule</code></td></tr>
+      <tr><td><code>notify.service.spec.ts</code></td><td>Unit test service (không cần Kafka thật)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>1. Env</h2>
+  <div class="code-block">
+    <span class="code-label">.env và .env.example</span>
+<pre><code>KAFKA_BROKERS=127.0.0.1:9092
+KAFKA_GROUP_ID=shopstream-notify-v1</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">env.validation.ts — thêm</span>
+<pre><code>KAFKA_BROKERS: Joi.string().min(<span class="num">1</span>).default(<span class="str">'127.0.0.1:9092'</span>),
+KAFKA_GROUP_ID: Joi.string().min(<span class="num">1</span>).default(<span class="str">'shopstream-notify-v1'</span>),
+});</code></pre>
+  </div>
+
+  <h2>2. Notify module (file mới)</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>mkdir -p src/notify
+mkdir -p src/notify/dto</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/notify/dto/order-paid.event.ts</span>
+<pre><code><span class="cmt">/** Payload value do Bài 16 emit — @Payload() nhận đúng object này. */</span>
+<span class="kw">export type</span> OrderPaidEvent = {
+  orderId: string;
+  userId: string;
+  total: number;
+  status: string;
+  paidAt: string;
+};</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/notify/notify.service.ts</span>
+<pre><code><span class="kw">import</span> { Injectable, Logger } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { OrderPaidEvent } <span class="kw">from</span> <span class="str">'./dto/order-paid.event'</span>;
+
+<span class="kw">@Injectable</span>()
+<span class="kw">export class</span> NotifyService {
+  <span class="kw">private readonly</span> logger = <span class="kw">new</span> Logger(NotifyService.name);
+  <span class="cmt">/** Ring buffer nhỏ — dễ verify bằng GET (tuỳ chọn nhưng nên có). */</span>
+  <span class="kw">private readonly</span> recent: OrderPaidEvent[] = [];
+  <span class="kw">private readonly</span> maxRecent = <span class="num">20</span>;
+
+  handleOrderPaid(event: OrderPaidEvent): <span class="kw">void</span> {
+    <span class="cmt">// Stub notify: production = email/SMS/push. Ở đây log + nhớ gần đây.</span>
+    <span class="kw">this</span>.logger.log(
+      `NOTIFY order.paid orderId=${event.orderId} userId=${event.userId} total=${event.total}`,
+    );
+    <span class="kw">this</span>.recent.unshift(event);
+    <span class="kw">if</span> (<span class="kw">this</span>.recent.length > <span class="kw">this</span>.maxRecent) <span class="kw">this</span>.recent.pop();
+  }
+
+  getRecent(): OrderPaidEvent[] {
+    <span class="kw">return</span> [...<span class="kw">this</span>.recent];
+  }
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/notify/notify.controller.ts</span>
+<pre><code><span class="kw">import</span> { Controller, Get, Logger } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> {
+  Ctx,
+  EventPattern,
+  KafkaContext,
+  Payload,
+} <span class="kw">from</span> <span class="str">'@nestjs/microservices'</span>;
+<span class="kw">import</span> { ORDER_PAID_TOPIC } <span class="kw">from</span> <span class="str">'../messaging/kafka.constants'</span>;
+<span class="kw">import</span> { OrderPaidEvent } <span class="kw">from</span> <span class="str">'./dto/order-paid.event'</span>;
+<span class="kw">import</span> { NotifyService } <span class="kw">from</span> <span class="str">'./notify.service'</span>;
+
+<span class="kw">@Controller</span>(<span class="str">'notify'</span>)
+<span class="kw">export class</span> NotifyController {
+  <span class="kw">private readonly</span> logger = <span class="kw">new</span> Logger(NotifyController.name);
+
+  <span class="kw">constructor</span>(<span class="kw">private readonly</span> notifyService: NotifyService) {}
+
+  <span class="cmt">/** HTTP debug — xem event consumer đã xử lý (không phải API public). */</span>
+  <span class="kw">@Get</span>(<span class="str">'recent'</span>)
+  recent() {
+    <span class="kw">return</span> { items: <span class="kw">this</span>.notifyService.getRecent() };
+  }
+
+  <span class="cmt">/**
+   * Pattern string = tên topic Kafka (khớp emit Bài 16).
+   * @Payload() = value object (đã verify), không phải cả {key,value}.
+   */</span>
+  <span class="kw">@EventPattern</span>(ORDER_PAID_TOPIC)
+  handleOrderPaid(
+    <span class="kw">@Payload</span>() payload: OrderPaidEvent,
+    <span class="kw">@Ctx</span>() context: KafkaContext,
+  ): <span class="kw">void</span> {
+    <span class="kw">const</span> original = context.getMessage();
+    <span class="kw">const</span> key = original.key?.toString();
+    <span class="kw">this</span>.logger.debug(
+      `kafka ${context.getTopic()} p=${context.getPartition()} off=${original.offset} key=${key}`,
+    );
+    <span class="kw">if</span> (!payload?.orderId) {
+      <span class="kw">this</span>.logger.warn(<span class="str">'Skip order.paid — thiếu orderId'</span>);
+      <span class="kw">return</span>;
+    }
+    <span class="kw">this</span>.notifyService.handleOrderPaid(payload);
+  }
+}</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">src/notify/notify.module.ts</span>
+<pre><code><span class="kw">import</span> { Module } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { NotifyController } <span class="kw">from</span> <span class="str">'./notify.controller'</span>;
+<span class="kw">import</span> { NotifyService } <span class="kw">from</span> <span class="str">'./notify.service'</span>;
+
+<span class="kw">@Module</span>({
+  controllers: [NotifyController],
+  providers: [NotifyService],
+})
+<span class="kw">export class</span> NotifyModule {}</code></pre>
+  </div>
+
+  <p>Trong <code>app.module.ts</code>: thêm <code>NotifyModule</code> vào <code>imports</code>.</p>
+
+  <h2>3. main.ts — bật hybrid Kafka</h2>
+  <div class="code-block">
+    <span class="code-label">src/main.ts — thay bootstrap</span>
+<pre><code><span class="kw">import</span> { ValidationPipe } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { ConfigService } <span class="kw">from</span> <span class="str">'@nestjs/config'</span>;
+<span class="kw">import</span> { NestFactory } <span class="kw">from</span> <span class="str">'@nestjs/core'</span>;
+<span class="kw">import</span> { MicroserviceOptions, Transport } <span class="kw">from</span> <span class="str">'@nestjs/microservices'</span>;
+<span class="kw">import</span> { AppModule } <span class="kw">from</span> <span class="str">'./app.module'</span>;
+<span class="kw">import</span> { HttpExceptionFilter } <span class="kw">from</span> <span class="str">'./common/filters/http-exception.filter'</span>;
+
+<span class="kw">async function</span> bootstrap() {
+  <span class="kw">const</span> app = <span class="kw">await</span> NestFactory.create(AppModule, { rawBody: <span class="kw">true</span> });
+
+  app.useGlobalPipes(
+    <span class="kw">new</span> ValidationPipe({
+      whitelist: <span class="kw">true</span>,
+      forbidNonWhitelisted: <span class="kw">true</span>,
+      transform: <span class="kw">true</span>,
+      transformOptions: { enableImplicitConversion: <span class="kw">true</span> },
+    }),
+  );
+  app.useGlobalFilters(<span class="kw">new</span> HttpExceptionFilter());
+
+  <span class="kw">const</span> config = app.get(ConfigService);
+  <span class="kw">const</span> brokers = config
+    .getOrThrow&lt;string&gt;(<span class="str">'KAFKA_BROKERS'</span>)
+    .split(<span class="str">','</span>)
+    .map((b) => b.trim())
+    .filter(Boolean);
+  <span class="kw">const</span> groupId = config.getOrThrow&lt;string&gt;(<span class="str">'KAFKA_GROUP_ID'</span>);
+
+  app.connectMicroservice&lt;MicroserviceOptions&gt;({
+    transport: Transport.KAFKA,
+    options: {
+      client: {
+        clientId: <span class="str">'shopstream-api'</span>,
+        brokers,
+      },
+      consumer: {
+        groupId,
+      },
+    },
+  });
+  <span class="cmt">// Không bật inheritAppConfig ở bài này — tránh ValidationPipe HTTP “đánh” payload Kafka.</span>
+
+  <span class="kw">await</span> app.startAllMicroservices();
+
+  <span class="kw">const</span> port = config.get&lt;number&gt;(<span class="str">'PORT'</span>, <span class="num">3000</span>);
+  <span class="kw">await</span> app.listen(port);
+  console.log(`ShopStream API http://localhost:${port} + Kafka group=${groupId} (-server)`);
+}
+bootstrap();</code></pre>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">Thứ tự quan trọng</div>
+    <p><code>startAllMicroservices()</code> <strong>trước</strong> <code>listen()</code>. Consumer join group lúc start microservice — nếu produce event trước khi app lên, message vẫn nằm trên topic; group mới từ “earliest/latest” theo config (mặc định thường từ committed offset / latest). Verify: <strong>start app trước</strong>, rồi mới webhook paid.</p>
+  </div>
+
+  <h2>4. Unit test service</h2>
+  <div class="code-block">
+    <span class="code-label">src/notify/notify.service.spec.ts</span>
+<pre><code><span class="kw">import</span> { NotifyService } <span class="kw">from</span> <span class="str">'./notify.service'</span>;
+
+describe(<span class="str">'NotifyService'</span>, () => {
+  it(<span class="str">'handleOrderPaid lưu recent'</span>, () => {
+    <span class="kw">const</span> svc = <span class="kw">new</span> NotifyService();
+    svc.handleOrderPaid({
+      orderId: <span class="str">'o1'</span>,
+      userId: <span class="str">'u1'</span>,
+      total: <span class="num">10</span>,
+      status: <span class="str">'paid'</span>,
+      paidAt: <span class="str">'2026-01-01T00:00:00.000Z'</span>,
+    });
+    expect(svc.getRecent()).toHaveLength(<span class="num">1</span>);
+    expect(svc.getRecent()[<span class="num">0</span>].orderId).toBe(<span class="str">'o1'</span>);
+  });
+});</code></pre>
+  </div>
+
+  <h2>5. Verify tay (nộp bài)</h2>
+  <ol>
+    <li><code>docker compose up -d kafka mongo</code> (đã có).</li>
+    <li>Restart API: <code>npm run start:dev</code> — log phải thấy consumer joined group <code>...-server</code>.</li>
+    <li>Flow checkout + webhook paid (như Bài 16) — <strong>sau khi</strong> API đã lên.</li>
+    <li>Log có dòng <code>NOTIFY order.paid orderId=...</code>.</li>
+    <li><code>curl -s http://127.0.0.1:3000/notify/recent</code> → thấy <code>orderId</code> vừa paid.</li>
+    <li>Optional: <code>kafka-consumer-groups.sh --describe --group shopstream-notify-v1-server</code> thấy offset tiến.</li>
+  </ol>
+  <div class="code-block">
+    <span class="code-label">bash — describe group Nest</span>
+<pre><code>cd shopstream
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 \
+  --describe \
+  --group shopstream-notify-v1-server</code></pre>
+  </div>
+  <div class="code-block">
+    <span class="code-label">bash — test + build</span>
+<pre><code>npm test
+npm run build</code></pre>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">🎤 Góc phỏng vấn</div>
+    <p><em>“HTTP và Kafka consumer chung process được không?”</em> → Được (hybrid); trade-off: deploy đơn giản, nhưng scale HTTP ≠ scale consumer, crash chung. Prod lớn thường tách worker. <em>“At-least-once?”</em> → crash trước commit offset → message giao lại → handler phải idempotent (bài sau).</p>
+  </div>
+
+  <h2>6. Quiz</h2>
+  <div class="quiz">
+    <div class="q">Câu 1. <code>@EventPattern('shopstream.order.paid')</code> gắn với gì?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — pattern = topic khi dùng Kafka transporter kiểu này.">A. Tên topic Kafka (khớp emit)</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Tên Mongo collection</button>
+    <button class="opt" data-correct="false" data-explain="Sai — đó là send/MessagePattern.">C. Reply topic bắt buộc</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Vì sao describe group thấy <code>...-server</code>?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — Nest ServerKafka postfix.">A. Nest ServerKafka tự thêm suffix tránh đụng ClientKafka</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Kafka bắt buộc mọi group kết thúc bằng -server</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Lỗi cấu hình brokers</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. <code>@Payload()</code> sau emit <code>{ key, value }</code> là gì? (đã verify)</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — Nest parse value đưa vào handler.">A. Object <code>value</code> (orderId, total, …)</button>
+    <button class="opt" data-correct="false" data-explain="Sai — key lấy qua KafkaContext/message.">B. Chỉ riêng key string</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Raw Buffer chưa parse</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li><code>KAFKA_GROUP_ID</code> + Joi</li>
+      <li><code>connectMicroservice</code> + <code>startAllMicroservices</code> trước <code>listen</code></li>
+      <li><code>NotifyModule</code> + <code>@EventPattern(ORDER_PAID_TOPIC)</code></li>
+      <li>Webhook paid → log NOTIFY + <code>/notify/recent</code> có orderId</li>
+      <li><code>npm test</code> + <code>build</code> xanh</li>
+    </ul>
+  </div>
+
+  <h2>7. Câu hỏi tư duy</h2>
+  <p>Hai instance API cùng <code>KAFKA_GROUP_ID</code> (cùng group sau suffix): một message <code>order.paid</code> sẽ được xử lý bởi bao nhiêu instance? Nếu bạn muốn <em>cả</em> notify và analytics đều nhận mọi event thì cấu hình group thế nào?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 18 · Idempotent Kafka consumer</div>
+    <p class="nd">At-least-once + xử lý trùng <code>orderId</code> an toàn (store đã xử lý).</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0016-nest-kafka-producer-order-paid.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Xong → paste: (1) log <code>NOTIFY order.paid ...</code>, (2) JSON <code>/notify/recent</code>, (3) (optional) describe group <code>...-server</code>, (4) <code>npm test</code>.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

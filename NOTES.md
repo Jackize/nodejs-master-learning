@@ -31,5 +31,5 @@
 - **Từ Bài 04:** không code dùm vào `shopstream/` — chỉ soạn bài + verify sandbox; học viên tự viết/apply.
 
 ## Current
-- **Bài 16 xong** — sẵn sàng Bài 17 Nest `@EventPattern` consumer.
-- Cheat-sheet gần nhất: Module 2 (sau Bài 13). Đếm 14–16 = 3 bài → chưa đủ mốc 5.
+- Đang ở **Bài 17** — Nest hybrid + `@EventPattern` consumer (notify stub).
+- Cheat-sheet gần nhất: Module 2 (sau Bài 13). Đếm 14–17 = 4 bài → chưa đủ mốc 5 (tới Bài 18 sẽ đủ).
