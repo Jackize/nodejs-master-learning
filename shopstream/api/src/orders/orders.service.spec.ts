@@ -4,9 +4,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ClientKafka } from '@nestjs/microservices';
 import mongoose, { Connection, Model } from 'mongoose';
+import { of } from 'rxjs';
 import { CartService } from '../cart/cart.service';
 import { ProductsService } from '../catalog/products.service';
+import { ORDER_PAID_TOPIC } from '../messaging/kafka.constants';
 import { OrdersService } from './orders.service';
 import {
   IdempotencyRecordDocument,
@@ -50,8 +53,15 @@ describe('OrdersService', () => {
     getOrThrow: jest.fn(),
   };
 
+  const kafkaMock = {
+    connect: jest.fn().mockResolvedValue(undefined),
+    emit: jest.fn().mockReturnValue(of(undefined)),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
+    kafkaMock.emit.mockClear();
+    kafkaMock.connect.mockClear();
     connection.startSession.mockResolvedValue(session);
     session.withTransaction.mockImplementation(
       async (fn: () => Promise<unknown>) => fn(),
@@ -76,6 +86,7 @@ describe('OrdersService', () => {
       productService as unknown as ProductsService,
       connection as unknown as Connection,
       config as unknown as ConfigService,
+      kafkaMock as unknown as ClientKafka,
     );
   });
 
@@ -289,6 +300,114 @@ describe('OrdersService', () => {
       total: 200_000,
       status: OrderStatus.Cancelled,
     });
+    expect(kafkaMock.emit).not.toHaveBeenCalled();
+    expect(session.endSession).toHaveBeenCalled();
+  });
+
+  it('paid từ pending_payment → emit shopstream.order.paid', async () => {
+    const orderId = new mongoose.Types.ObjectId();
+    const userId = new mongoose.Types.ObjectId();
+    const productId = new mongoose.Types.ObjectId();
+    const order = {
+      _id: orderId,
+      userId,
+      items: [
+        {
+          productId,
+          quantity: 2,
+          name: 'Áo thun',
+          unitPrice: 100_000,
+        },
+      ],
+      total: 200_000,
+      status: OrderStatus.PendingPayment,
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    orderModel.findById.mockReturnValue({
+      session: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(order),
+    });
+    const body = JSON.stringify({
+      orderId: orderId.toString(),
+      result: 'paid',
+    });
+    const sig = signPaymentPayload(WEBHOOK_SECRET, body);
+
+    const result = await service.handlePaymentWebhook(Buffer.from(body), sig, {
+      orderId: orderId.toString(),
+      result: 'paid',
+    });
+
+    expect(order.status).toBe(OrderStatus.Paid);
+    expect(order.save).toHaveBeenCalledWith({ session });
+    expect(productService.releaseStock).not.toHaveBeenCalled();
+    expect(kafkaMock.emit).toHaveBeenCalledWith(
+      ORDER_PAID_TOPIC,
+      expect.objectContaining({
+        key: orderId.toString(),
+        value: expect.objectContaining({
+          orderId: orderId.toString(),
+          userId: userId.toString(),
+          total: 200_000,
+          status: OrderStatus.Paid,
+          paidAt: expect.any(String),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      id: orderId.toString(),
+      userId: userId.toString(),
+      items: [
+        {
+          productId: productId.toString(),
+          quantity: 2,
+          name: 'Áo thun',
+          unitPrice: 100_000,
+        },
+      ],
+      total: 200_000,
+      status: OrderStatus.Paid,
+    });
+    expect(session.endSession).toHaveBeenCalled();
+  });
+
+  it('already paid → không emit Kafka', async () => {
+    const orderId = new mongoose.Types.ObjectId();
+    const userId = new mongoose.Types.ObjectId();
+    const productId = new mongoose.Types.ObjectId();
+    const order = {
+      _id: orderId,
+      userId,
+      items: [
+        {
+          productId,
+          quantity: 1,
+          name: 'Áo thun',
+          unitPrice: 100_000,
+        },
+      ],
+      total: 100_000,
+      status: OrderStatus.Paid,
+      save: jest.fn(),
+    };
+    orderModel.findById.mockReturnValue({
+      session: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(order),
+    });
+    const body = JSON.stringify({
+      orderId: orderId.toString(),
+      result: 'paid',
+    });
+    const sig = signPaymentPayload(WEBHOOK_SECRET, body);
+
+    const result = await service.handlePaymentWebhook(Buffer.from(body), sig, {
+      orderId: orderId.toString(),
+      result: 'paid',
+    });
+
+    expect(order.save).not.toHaveBeenCalled();
+    expect(kafkaMock.emit).not.toHaveBeenCalled();
+    expect(result.status).toBe(OrderStatus.Paid);
     expect(session.endSession).toHaveBeenCalled();
   });
 });

@@ -11,4 +11,5 @@ export const envValidationSchema = Joi.object({
   JWT_SECRET: Joi.string().min(16).required(),
   JWT_EXPIRES_IN: Joi.number().integer().positive().default(86400),
   PAYMENT_WEBHOOK_SECRET: Joi.string().min(16).required(),
+  KAFKA_BROKERS: Joi.string().min(1).default('127.0.0.1:9092'),
 });

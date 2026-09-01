@@ -1,14 +1,21 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ClientKafka } from '@nestjs/microservices';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
+import { lastValueFrom } from 'rxjs';
 import { ProductsService } from '../catalog/products.service';
+import {
+  KAFKA_PRODUCER,
+  ORDER_PAID_TOPIC,
+} from '../messaging/kafka.constants';
 import { CartService } from './../cart/cart.service';
 import { OrderResponse } from './dto/order-response.type';
 import { PaymentWebhookDto } from './dto/payment-webhook.dto';
@@ -36,7 +43,12 @@ export class OrdersService {
     private readonly productService: ProductsService,
     @InjectConnection() private readonly connection: Connection,
     private readonly config: ConfigService,
+    @Inject(KAFKA_PRODUCER) private readonly kafka: ClientKafka,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.kafka.connect();
+  }
 
   async createOrderFromCart(userId: string): Promise<OrderResponse> {
     const session = await this.connection.startSession();
@@ -142,6 +154,7 @@ export class OrdersService {
     const session = await this.connection.startSession();
     try {
       let orderDoc!: OrderDocument;
+      let becomePaid = false; // flag to check if the order has become paid
       await session.withTransaction(async () => {
         const order = await this.orderModel
           .findById(dto.orderId)
@@ -161,6 +174,7 @@ export class OrdersService {
           order.status = OrderStatus.Paid;
           await order.save({ session });
           orderDoc = order;
+          becomePaid = true;
           return;
         }
 
@@ -184,10 +198,30 @@ export class OrdersService {
         await order.save({ session });
         orderDoc = order;
       });
+      // send message to kafka if the order has become paid
+      if (becomePaid) {
+        await this.publishOrderPaid(orderDoc);
+      }
       return this.toResponse(orderDoc);
     } finally {
       await session.endSession();
     }
+  }
+
+  private async publishOrderPaid(order: OrderDocument): Promise<void> {
+    const orderId = order._id.toString();
+    await lastValueFrom(
+      this.kafka.emit(ORDER_PAID_TOPIC, {
+        key: orderId, // cùng order → cùng partition
+        value: {
+          orderId,
+          userId: order.userId.toString(),
+          total: order.total,
+          status: OrderStatus.Paid,
+          paidAt: new Date().toISOString(),
+        },
+      }),
+    );
   }
 
   private toResponse(doc: OrderDocument): OrderResponse {
