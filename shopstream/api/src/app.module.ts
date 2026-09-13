@@ -8,6 +8,7 @@ import { CartModule } from './cart/cart.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { envValidationSchema } from './config/env.validation';
 import { HealthModule } from './health/health.module';
+import { NotifyModule } from './notify/notify.module';
 import { OrdersModule } from './orders/orders.module';
 
 @Module({
@@ -28,6 +29,7 @@ import { OrdersModule } from './orders/orders.module';
     AuthModule,
     CartModule,
     OrdersModule,
+    NotifyModule,
   ],
   controllers: [AppController],
   providers: [AppService],
