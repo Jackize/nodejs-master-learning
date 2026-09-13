@@ -47,3 +47,6 @@
 | **producerOnlyMode** | Cấu hình Nest Kafka client chỉ producer — không join consumer group. |
 | **Keyed message** | Kafka message có `key` (+ `value`); cùng key → cùng partition → giữ thứ tự theo entity. |
 | **Dual-write** | Ghi DB rồi publish broker tách biệt (không atomic); mất event nếu emit fail sau commit. |
+| **Hybrid application** | Một Nest process vừa HTTP (`listen`) vừa microservice (`connectMicroservice` + `startAllMicroservices`). |
+| **@EventPattern** | Handler event-based Nest; với Kafka, pattern thường = tên topic; không chờ reply. |
+| **KafkaContext** | Context message Kafka (topic, partition, offset, key…) qua `@Ctx()`. |

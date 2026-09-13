@@ -31,5 +31,5 @@
 - **Từ Bài 04:** không code dùm vào `shopstream/` — chỉ soạn bài + verify sandbox; học viên tự viết/apply.
 
 ## Current
-- Đang ở **Bài 17** — Nest hybrid + `@EventPattern` consumer (notify stub).
-- Cheat-sheet gần nhất: Module 2 (sau Bài 13). Đếm 14–17 = 4 bài → chưa đủ mốc 5 (tới Bài 18 sẽ đủ).
+- **Bài 17 xong** — sẵn sàng Bài 18 idempotent Kafka consumer.
+- Cheat-sheet gần nhất: Module 2 (sau Bài 13). Đếm 14–17 = 4 bài → Bài 18 sẽ chạm mốc 5 (soạn cheat-sheet Module 3).
