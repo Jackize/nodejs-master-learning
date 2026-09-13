@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bài 18 · Idempotent Kafka consumer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="lesson.css">
+</head>
+<body>
+<div class="wrap">
+
+  <span class="lesson-tag">Module 3 · Bài 18</span>
+  <h1>Idempotent Kafka consumer</h1>
+  <p class="subtitle">Win: cùng <code>orderId</code> bị deliver 2 lần (at-least-once) → side-effect notify chỉ chạy <strong>1 lần</strong>; lần 2 log <code>SKIP duplicate</code>. Dùng Mongo unique index “claim” — bắc cầu từ Idempotency-Key (Bài 12).</p>
+  <p class="meta-line">⏱ ~90–120 phút · 🎯 Tự code · đã verify claim-first + E11000 trên Mongo RS · docs: <a href="https://docs.nestjs.com/microservices/kafka" target="_blank">Nest Kafka</a> · at-least-once semantics.</p>
+
+  <div class="callout warn">
+    <div class="ct">✍️ Tự làm</div>
+    <p>Không pre-fill. Hybrid + <code>@EventPattern</code> Bài 17 giữ nguyên — bạn <strong>đổi</strong> <code>NotifyService</code> thành async + store đã xử lý. Retry/DLQ → bài sau. Cheat-sheet Module 3 (Kafka) đi kèm mốc 5 bài.</p>
+  </div>
+
+  <div class="callout bridge">
+    <div class="ct">🌉 Bắc cầu</div>
+    <p>Bài 12: HTTP <code>Idempotency-Key</code> + unique <code>(userId,key)</code> → retry không tạo order 2 lần. Bài 15–17: Kafka <strong>at-least-once</strong> (crash trước commit offset / rebalance) → cùng message có thể vào handler lại. Cùng ý tưởng: <em>ghi nhận đã xử lý</em> trước/kèm side-effect.</p>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">💡 Claim-first (chọn cho notify)</div>
+    <p>
+      1. <code>insert { consumer, orderId }</code> với <strong>unique index</strong>.<br>
+      2. Thành công → mới gửi notify (log).<br>
+      3. E11000 → đã claim rồi → <code>SKIP</code>, không notify lại.<br><br>
+      <strong>Trade-off:</strong> crash <em>sau</em> insert, <em>trước</em> notify → có thể mất 1 lần gửi (at-most-once side-effect). Ngược lại “notify rồi mới insert” → dễ gửi trùng. Email/SMS thường ưu tiên <strong>không spam</strong> → claim-first. Nói rõ khi phỏng vấn.
+    </p>
+  </div>
+
+  <h2>0. Bản đồ file</h2>
+  <table class="data">
+    <thead><tr><th>File</th><th>Việc</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/notify/schemas/processed-event.schema.ts</code></td><td><strong>Mới</strong> — unique <code>(consumer, orderId)</code></td></tr>
+      <tr><td><code>notify.module.ts</code></td><td><code>MongooseModule.forFeature</code></td></tr>
+      <tr><td><code>notify.service.ts</code></td><td>async claim → notify / skip; stats</td></tr>
+      <tr><td><code>notify.controller.ts</code></td><td><code>await</code> service; thêm <code>GET /notify/stats</code></td></tr>
+      <tr><td><code>notify.service.spec.ts</code></td><td>Test: lần 1 process, lần 2 skip</td></tr>
+    </tbody>
+  </table>
+
+  <h2>1. Schema ProcessedEvent</h2>
+  <div class="code-block">
+    <span class="code-label">src/notify/schemas/processed-event.schema.ts</span>
+<pre><code><span class="kw">import</span> { Prop, Schema, SchemaFactory } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { HydratedDocument } <span class="kw">from</span> <span class="str">'mongoose'</span>;
+
+<span class="kw">export type</span> ProcessedEventDocument = HydratedDocument&lt;ProcessedEvent&gt;;
+
+<span class="kw">@Schema</span>({ timestamps: <span class="kw">true</span>, collection: <span class="str">'processed_events'</span> })
+<span class="kw">export class</span> ProcessedEvent {
+  <span class="cmt">/** Tên consumer logic — tách analytics vs notify nếu sau này thêm group. */</span>
+  <span class="kw">@Prop</span>({ required: <span class="kw">true</span>, trim: <span class="kw">true</span> })
+  consumer: string;
+
+  <span class="kw">@Prop</span>({ required: <span class="kw">true</span>, trim: <span class="kw">true</span> })
+  orderId: string;
+
+  <span class="kw">@Prop</span>()
+  paidAt?: string;
+}
+
+<span class="kw">export const</span> ProcessedEventSchema = SchemaFactory.createForClass(ProcessedEvent);
+ProcessedEventSchema.index({ consumer: <span class="num">1</span>, orderId: <span class="num">1</span> }, { unique: <span class="kw">true</span> });</code></pre>
+  </div>
+
+  <div class="code-block">
+    <span class="code-label">notify.module.ts</span>
+<pre><code><span class="kw">import</span> { Module } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { MongooseModule } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { NotifyController } <span class="kw">from</span> <span class="str">'./notify.controller'</span>;
+<span class="kw">import</span> { NotifyService } <span class="kw">from</span> <span class="str">'./notify.service'</span>;
+<span class="kw">import</span> { ProcessedEvent, ProcessedEventSchema } <span class="kw">from</span> <span class="str">'./schemas/processed-event.schema'</span>;
+
+<span class="kw">@Module</span>({
+  imports: [
+    MongooseModule.forFeature([
+      { name: ProcessedEvent.name, schema: ProcessedEventSchema },
+    ]),
+  ],
+  controllers: [NotifyController],
+  providers: [NotifyService],
+})
+<span class="kw">export class</span> NotifyModule {}</code></pre>
+  </div>
+
+  <h2>2. NotifyService — claim rồi mới notify</h2>
+  <div class="code-block">
+    <span class="code-label">src/notify/notify.service.ts — nguyên hướng</span>
+<pre><code><span class="kw">import</span> { Injectable, Logger } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;
+<span class="kw">import</span> { ConfigService } <span class="kw">from</span> <span class="str">'@nestjs/config'</span>;
+<span class="kw">import</span> { InjectModel } <span class="kw">from</span> <span class="str">'@nestjs/mongoose'</span>;
+<span class="kw">import</span> { Model } <span class="kw">from</span> <span class="str">'mongoose'</span>;
+<span class="kw">import</span> { OrderPaidEvent } <span class="kw">from</span> <span class="str">'./dto/order-paid.event'</span>;
+<span class="kw">import</span> {
+  ProcessedEvent,
+  ProcessedEventDocument,
+} <span class="kw">from</span> <span class="str">'./schemas/processed-event.schema'</span>;
+
+<span class="kw">@Injectable</span>()
+<span class="kw">export class</span> NotifyService {
+  <span class="kw">private readonly</span> logger = <span class="kw">new</span> Logger(NotifyService.name);
+  <span class="kw">private readonly</span> recent: OrderPaidEvent[] = [];
+  <span class="kw">private readonly</span> maxRecent = <span class="num">20</span>;
+  <span class="kw">private</span> processedCount = <span class="num">0</span>;
+  <span class="kw">private</span> skippedCount = <span class="num">0</span>;
+
+  <span class="kw">constructor</span>(
+    <span class="kw">@InjectModel</span>(ProcessedEvent.name)
+    <span class="kw">private readonly</span> processedModel: Model&lt;ProcessedEventDocument&gt;,
+    <span class="kw">private readonly</span> config: ConfigService,
+  ) {}
+
+  <span class="kw">private</span> consumerName(): string {
+    <span class="cmt">// Dùng group id logic (không cần suffix -server) — ổn định qua restart</span>
+    <span class="kw">return</span> <span class="kw">this</span>.config.getOrThrow&lt;string&gt;(<span class="str">'KAFKA_GROUP_ID'</span>);
+  }
+
+  <span class="kw">async</span> handleOrderPaid(event: OrderPaidEvent): Promise&lt;{ status: <span class="str">'processed'</span> | <span class="str">'skipped'</span> }&gt; {
+    <span class="kw">try</span> {
+      <span class="kw">await</span> <span class="kw">this</span>.processedModel.create({
+        consumer: <span class="kw">this</span>.consumerName(),
+        orderId: event.orderId,
+        paidAt: event.paidAt,
+      });
+    } <span class="kw">catch</span> (error: unknown) {
+      <span class="kw">if</span> ((error <span class="kw">as</span> { code?: number }).code === <span class="num">11000</span>) {
+        <span class="kw">this</span>.skippedCount += <span class="num">1</span>;
+        <span class="kw">this</span>.logger.log(`SKIP duplicate order.paid orderId=${event.orderId}`);
+        <span class="kw">return</span> { status: <span class="str">'skipped'</span> };
+      }
+      <span class="kw">throw</span> error;
+    }
+
+    <span class="cmt">// Side-effect chỉ chạy sau khi claim thành công</span>
+    <span class="kw">this</span>.logger.log(
+      `NOTIFY order.paid orderId=${event.orderId} userId=${event.userId} total=${event.total}`,
+    );
+    <span class="kw">this</span>.recent.unshift(event);
+    <span class="kw">if</span> (<span class="kw">this</span>.recent.length > <span class="kw">this</span>.maxRecent) <span class="kw">this</span>.recent.pop();
+    <span class="kw">this</span>.processedCount += <span class="num">1</span>;
+    <span class="kw">return</span> { status: <span class="str">'processed'</span> };
+  }
+
+  getRecent(): OrderPaidEvent[] {
+    <span class="kw">return</span> [...<span class="kw">this</span>.recent];
+  }
+
+  getStats() {
+    <span class="kw">return</span> {
+      processed: <span class="kw">this</span>.processedCount,
+      skipped: <span class="kw">this</span>.skippedCount,
+      recentCount: <span class="kw">this</span>.recent.length,
+    };
+  }
+}</code></pre>
+  </div>
+
+  <h2>3. Controller — await + stats</h2>
+  <div class="code-block">
+    <span class="code-label">notify.controller.ts — chỗ đổi</span>
+<pre><code><span class="kw">@Get</span>(<span class="str">'stats'</span>)
+stats() {
+  <span class="kw">return</span> <span class="kw">this</span>.notifyService.getStats();
+}
+
+<span class="kw">@EventPattern</span>(ORDER_PAID_TOPIC)
+<span class="kw">async</span> handleOrderPaid(
+  <span class="kw">@Payload</span>() payload: OrderPaidEvent,
+  <span class="kw">@Ctx</span>() context: KafkaContext,
+): Promise&lt;<span class="kw">void</span>&gt; {
+  <span class="cmt">// ... debug log key/partition như Bài 17</span>
+  <span class="kw">if</span> (!payload?.orderId) {
+    <span class="kw">this</span>.logger.warn(<span class="str">'Skip order.paid — thiếu orderId'</span>);
+    <span class="kw">return</span>;
+  }
+  <span class="kw">await</span> <span class="kw">this</span>.notifyService.handleOrderPaid(payload);
+}</code></pre>
+  </div>
+  <div class="callout tip">
+    <div class="ct">Handler phải async/await</div>
+    <p>Nếu không <code>await</code> claim, Nest có thể commit offset trước khi Mongo xong → mất an toàn. Trả về Promise để framework chờ handler hoàn tất.</p>
+  </div>
+
+  <h2>4. Unit test</h2>
+  <div class="code-block">
+    <span class="code-label">notify.service.spec.ts — ý chính</span>
+<pre><code><span class="kw">const</span> event = {
+  orderId: <span class="str">'o1'</span>,
+  userId: <span class="str">'u1'</span>,
+  total: <span class="num">10</span>,
+  status: <span class="str">'paid'</span>,
+  paidAt: <span class="str">'2026-01-01T00:00:00.000Z'</span>,
+};
+
+it(<span class="str">'lần 1 processed, lần 2 skipped'</span>, <span class="kw">async</span> () => {
+  <span class="kw">const</span> processedModel = {
+    create: jest
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(Object.assign(<span class="kw">new</span> Error(<span class="str">'E11000'</span>), { code: <span class="num">11000</span> })),
+  };
+  <span class="kw">const</span> config = {
+    getOrThrow: jest.fn().mockReturnValue(<span class="str">'shopstream-notify-v1'</span>),
+  };
+  <span class="kw">const</span> svc = <span class="kw">new</span> NotifyService(processedModel <span class="kw">as</span> any, config <span class="kw">as</span> any);
+
+  <span class="kw">await</span> expect(svc.handleOrderPaid(event)).resolves.toEqual({ status: <span class="str">'processed'</span> });
+  <span class="kw">await</span> expect(svc.handleOrderPaid(event)).resolves.toEqual({ status: <span class="str">'skipped'</span> });
+  expect(svc.getRecent()).toHaveLength(<span class="num">1</span>);
+  expect(svc.getStats()).toEqual({ processed: <span class="num">1</span>, skipped: <span class="num">1</span>, recentCount: <span class="num">1</span> });
+});</code></pre>
+  </div>
+
+  <h2>5. Verify tay</h2>
+  <ol>
+    <li>Restart API (<code>start:dev</code>) — Mongo tạo index unique.</li>
+    <li>Checkout + webhook paid → log <code>NOTIFY</code>, <code>/notify/stats</code> <code>processed</code> tăng.</li>
+    <li><strong>Produce trùng</strong> cùng <code>orderId</code> lên topic (app đang chạy):</li>
+  </ol>
+  <div class="code-block">
+    <span class="code-label">bash — shopstream/ — produce duplicate value</span>
+<pre><code><span class="cmt"># Thay ORDER_ID bằng id vừa paid</span>
+printf <span class="str">'%s\n'</span> <span class="str">"$ORDER_ID:{\"orderId\":\"$ORDER_ID\",\"userId\":\"u\",\"total\":1,\"status\":\"paid\",\"paidAt\":\"2026-09-13T00:00:00.000Z\"}"</span> | \
+docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 \
+  --topic shopstream.order.paid \
+  --reader-property parse.key=<span class="kw">true</span> \
+  --reader-property key.separator=:</code></pre>
+  </div>
+  <p>Kỳ vọng: log <code>SKIP duplicate order.paid orderId=...</code>; <code>curl /notify/stats</code> → <code>skipped ≥ 1</code>; <code>/notify/recent</code> <strong>không</strong> nhân đôi cùng orderId.</p>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>curl -s http://127.0.0.1:3000/notify/stats
+curl -s http://127.0.0.1:3000/notify/recent
+npm test
+npm run build</code></pre>
+  </div>
+
+  <div class="callout why">
+    <div class="ct">🎤 Góc phỏng vấn</div>
+    <p><em>“Kafka exactly-once?”</em> → Broker/transactional producer là một phần; app vẫn cần idempotent handler vì at-least-once là mặc định phổ biến. <em>“Giống Idempotency-Key?”</em> → Cùng unique claim; khác chỗ: key HTTP do client gửi vs key nghiệp vụ (<code>orderId</code>) trên event.</p>
+  </div>
+
+  <h2>6. Quiz</h2>
+  <div class="quiz">
+    <div class="q">Câu 1. Vì sao consumer Kafka cần idempotent?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — at-least-once có thể giao lại.">A. Delivery thường at-least-once — message có thể xử lý lại</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Kafka chỉ lưu 1 message / topic</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Nest tự đảm bảo exactly-once</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 2. Claim-first + unique index khi trùng sẽ?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng — E11000 → skip side-effect.">A. Skip notify lần 2</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">B. Xóa order trong Mongo</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Tạo partition mới</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="quiz">
+    <div class="q">Câu 3. Trade-off claim-first?</div>
+    <button class="opt" data-correct="true" data-explain="Đúng.">A. Crash giữa claim và notify có thể mất 1 lần gửi</button>
+    <button class="opt" data-correct="false" data-explain="Sai — đó là risk của notify-then-insert.">B. Luôn gửi email 2 lần</button>
+    <button class="opt" data-correct="false" data-explain="Sai.">C. Không cần unique index</button>
+    <div class="feedback"></div>
+  </div>
+
+  <div class="callout tip">
+    <div class="ct">✅ Checklist</div>
+    <ul class="checklist">
+      <li>Schema + unique <code>(consumer, orderId)</code></li>
+      <li><code>handleOrderPaid</code> async: create → notify / E11000 → SKIP</li>
+      <li>Controller <code>await</code>; có <code>/notify/stats</code></li>
+      <li>Produce trùng → SKIP; stats skipped tăng; recent không nhân đôi</li>
+      <li><code>npm test</code> + build xanh</li>
+    </ul>
+  </div>
+
+  <h2>7. Câu hỏi tư duy</h2>
+  <p>Handler throw exception <em>sau</em> khi claim thành công nhưng <em>trước</em> khi kịp… không, đã claim. Còn nếu throw <em>trước</em> claim (Mongo down): offset có commit không? Bạn muốn retry message đó thế nào (liên hệ bài retry/DLQ)?</p>
+
+  <div class="next-box">
+    <div class="nl">→ Bài tiếp theo</div>
+    <div class="nt">Bài 19 · Consumer error handling &amp; retry mindset</div>
+    <p class="nd">Khi nào throw / nuốt lỗi; liên hệ commit offset và DLQ (khảo sát).</p>
+  </div>
+
+  <div class="navbar">
+    <a href="0017-nest-kafka-consumer-event-pattern.html">← Trước</a>
+    <a href="index.html">🏠 Mục lục</a>
+    <a class="disabled">Sau →</a>
+  </div>
+
+  <p class="try-it">💬 <strong>Tôi là người dạy của bạn.</strong> Xong → paste: log <code>NOTIFY</code> + <code>SKIP duplicate</code>, <code>/notify/stats</code>, và <code>npm test</code>. Ôn kèm <a href="../reference/nestjs-module3-kafka.html">cheat-sheet Module 3</a>.</p>
+
+</div>
+<script src="lesson-enhance.js"></script>
+</body>
+</html>

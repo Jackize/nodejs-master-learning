@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cheat-sheet · Module 3 Kafka</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../lessons/lesson.css">
+</head>
+<body>
+<div class="wrap">
+  <span class="lesson-tag">Reference · Module 3</span>
+  <h1>Kafka → Nest — ôn nhanh</h1>
+  <p class="subtitle">Bài 14–18: recall Module 2 · topic/group CLI · Nest producer · hybrid consumer · idempotent handler.</p>
+
+  <h2>Kafka primitives (15)</h2>
+  <ul>
+    <li><strong>Topic</strong> append-only log — ShopStream: <code>shopstream.order.paid</code> (3 partitions)</li>
+    <li><strong>Key</strong> → cùng partition → thứ tự theo entity (<code>orderId</code>)</li>
+    <li><strong>Consumer group</strong>: cùng group = chia partition; khác group = fan-out</li>
+    <li><strong>Offset</strong> = progress group trên partition (at-least-once nếu crash trước commit)</li>
+  </ul>
+
+  <h2>Nest producer (16)</h2>
+  <ul>
+    <li>Packages: <code>@nestjs/microservices</code> + <code>kafkajs</code> (khớp version Nest)</li>
+    <li><code>ClientsModule</code> + <code>producerOnlyMode: true</code></li>
+    <li><code>emit(topic, { key, value })</code> + <code>lastValueFrom</code>; <code>connect()</code> trong <code>onModuleInit</code></li>
+    <li>Emit <strong>sau</strong> Mongo commit; chỉ khi transition → <code>paid</code> (không spam already-paid)</li>
+    <li><strong>Dual-write</strong>: DB paid rồi Kafka fail → mất event (outbox sau)</li>
+  </ul>
+
+  <h2>Nest consumer / hybrid (17)</h2>
+  <ul>
+    <li><code>connectMicroservice(Transport.KAFKA)</code> → <code>startAllMicroservices()</code> → <code>listen()</code></li>
+    <li><code>@EventPattern('shopstream.order.paid')</code> — <code>@Payload()</code> = value object</li>
+    <li>Nest gắn suffix: group <code>shopstream-notify-v1<strong>-server</strong></code></li>
+    <li>Debug: log + <code>GET /notify/recent</code></li>
+  </ul>
+
+  <h2>Idempotent consumer (18)</h2>
+  <ul>
+    <li>Unique <code>(consumer, orderId)</code> trên <code>processed_events</code></li>
+    <li><strong>Claim-first</strong>: insert → notify; E11000 → SKIP</li>
+    <li>Trade-off: crash giữa claim &amp; notify có thể mất 1 lần gửi</li>
+    <li>Giống tinh thần HTTP Idempotency-Key (Bài 12), key = <code>orderId</code></li>
+  </ul>
+
+  <h2>Env gợi ý</h2>
+  <table class="data">
+    <thead><tr><th>Biến</th><th>Ý nghĩa</th></tr></thead>
+    <tbody>
+      <tr><td><code>KAFKA_BROKERS</code></td><td>CSV brokers (local <code>127.0.0.1:9092</code>)</td></tr>
+      <tr><td><code>KAFKA_GROUP_ID</code></td><td>Logic group; broker thấy thêm <code>-server</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>CLI nhanh</h2>
+  <div class="code-block">
+    <span class="code-label">bash</span>
+<pre><code>docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --describe --topic shopstream.order.paid
+
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --group shopstream-notify-v1-server</code></pre>
+  </div>
+
+  <h2>Phỏng vấn nhanh</h2>
+  <ul>
+    <li>emit vs send — event vs request-reply</li>
+    <li>Hybrid cùng process vs tách worker — ops vs scale độc lập</li>
+    <li>at-least-once + idempotent handler vs “exactly-once” marketing</li>
+    <li>Dual-write vs transactional outbox</li>
+  </ul>
+
+  <p class="try-it">
+    <a href="../lessons/index.html">← Mục lục</a> ·
+    <a href="nestjs-module2-cart-order.html">Module 2</a> ·
+    <a href="nestjs-module1-catalog-auth.html">Module 1</a>
+  </p>
+</div>
+<script src="../lessons/lesson-enhance.js"></script>
+</body>
+</html>
